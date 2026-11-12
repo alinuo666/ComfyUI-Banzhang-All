@@ -181,6 +181,25 @@ def _打开帧源(视频, 图像, 帧率, 编码器):
     raise ValueError("RelayVSR：「视频」和「图像」至少接一个——整段视频接「视频」，帧序列接「图像」。")
 
 
+def _有下游消费(prompt, node_id):
+    """任何下游节点把本节点任一输出当输入。判不出来（拿不到 prompt / 找不到自己）
+    一律按「有人接」返回：宁可保留原来的报错，也不能把真接错静默吞成跳过。
+    与「视频合并」的 _有下游消费 同口径。"""
+    if not prompt or node_id is None:
+        return True
+    me = str(node_id)
+    try:
+        for nid, node in prompt.items():
+            if str(nid) == me or not isinstance(node, dict):
+                continue
+            for v in (node.get("inputs") or {}).values():
+                if isinstance(v, list) and len(v) == 2 and str(v[0]) == me and isinstance(v[1], int):
+                    return True
+    except Exception:
+        return True
+    return False
+
+
 def _解析注意力后端(启用):
     """加速开 → 把 ComfyUI 的 int8 注意力包成 SDPA 同签名；关或不可用 → None（原生 SDPA）。
 
@@ -442,6 +461,9 @@ def _流式输入():
                 "tooltip": "接帧序列（VHS 类加载节点的图像输出）。没有音轨，输出为无声视频，帧率按上面的「帧率」控件。",
             }),
         },
+        # 隐藏入口不占 widgets_values 位置（ComfyUI 注入、不当控件存），旧图不会错位。
+        # 用来判「本节点是不是纯摆着」：输出节点没接线也会被执行，得自己挑掉。
+        "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
     }
 
 
@@ -456,7 +478,16 @@ class BanZhangRelayVSRStreaming:
     OUTPUT_NODE = True
     CATEGORY = _类别
 
-    def 流式超分(self, 模型, 放大倍率, 时间块帧数, 空间分块, 编码器, 帧率, 视频=None, 图像=None):
+    def 流式超分(self, 模型, 放大倍率, 时间块帧数, 空间分块, 编码器, 帧率,
+               视频=None, 图像=None, prompt=None, unique_id=None):
+        # 本节点 OUTPUT_NODE=True，ComfyUI 收执行入口只认标志不认连线：纯摆着、
+        # 没接帧源的三采节点也会被送进来，「无输入」raise 会把整轮 prompt 打断，
+        # 连真正要跑的一采一起停（20261112 用户报障）。与「视频合并」同口径：
+        # 没有帧源（视频/图像都没接）且无下游消费 → 跳过。有下游却缺帧源属于
+        # 接错了，仍走下面的报错，不静默吞。
+        if 视频 is None and 图像 is None and not _有下游消费(prompt, unique_id):
+            print("⏭️ [RelayVSR 流式] 未接帧源且无下游 → 跳过（不报错，不影响本轮其他节点）")
+            return {"ui": {}, "result": (None, None)}
         _校验倍率(模型, 放大倍率)
         reader = _打开帧源(视频, 图像, 帧率, 编码器)
         块数 = _空间分块[空间分块]
