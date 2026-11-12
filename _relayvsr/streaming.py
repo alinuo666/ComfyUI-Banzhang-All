@@ -10,7 +10,7 @@ import numpy as np
 import comfy.utils
 import folder_paths
 
-from .shotcut import first_cut
+from .shotcut import ShotCutDetector
 from .tiling import axis_alphas, axis_tiles, stitch
 from .video_io import CODECS, PRESETS, FrameSequenceReader, VideoReader, VideoWriter
 
@@ -69,8 +69,11 @@ def _shot_blocks(reader, chunk_len, overlap):
     而且新镜头的第一帧必须自己当参考，不能沿用旧镜头的。
     音频不按帧对齐（解封装读到哪算哪），所以整批随块发出、发过即清，总量与顺序都不变。
     frames 为空的那一次是纯音频收尾：重采样器尾部样本只在最后一次空读里吐出来。
+    硬切标记在读帧时逐帧算好、与帧一一对应；重叠携带帧复用旧标记，绝不重判 ——
+    重判会丢掉运动历史，把持续大运动误判成硬切，切出比携带帧数还短的块。
     """
-    buf, audio = [], []
+    detector = ShotCutDetector()
+    buf, marks, audio = [], [], []
     eof = False
     while True:
         while not eof and len(buf) < chunk_len:
@@ -78,22 +81,23 @@ def _shot_blocks(reader, chunk_len, overlap):
             audio.extend(got_audio)
             if got:
                 buf.extend(got)
+                marks.extend(detector.is_cut(frame) for frame in got)
             else:
                 eof = True
         if not buf:
             if audio:
                 yield [], audio, 0
             return
-        cut = first_cut(buf)
+        cut = next((i for i in range(1, len(marks)) if marks[i]), None)
         if cut is not None:
             yield buf[:cut], audio, 0
-            buf, audio = buf[cut:], []
+            buf, marks, audio = buf[cut:], marks[cut:], []
             continue
         tail = 0 if eof else overlap
         yield buf, audio, tail
         if eof:
             return
-        buf, audio = buf[len(buf) - tail:], []
+        buf, marks, audio = buf[len(buf) - tail:], marks[len(marks) - tail:], []
 
 
 def stream_upscale(

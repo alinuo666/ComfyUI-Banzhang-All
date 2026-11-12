@@ -26,20 +26,25 @@ def scene_score(previous_mafd, mafd):
     return min(mafd, abs(mafd - previous_mafd)) / 100.0
 
 
-def first_cut(frames):
-    """第一个硬切帧的下标（该帧是新镜头的第一帧），没有则 None。
+class ShotCutDetector:
+    """跨块连续的硬切判定：每帧只判一次，运动历史不因分块而重置。
 
-    返回下标而不是布尔：调用方要在这一帧之前收块，并让下一块从这一帧起算参考。
+    按块重新起算会让块首那一对退化成裸 MAD/100，持续大运动被误判成硬切；
+    误判点落在重叠携带区时，切出的块比携带帧数还短，融合时数组越界崩溃。
     """
-    if len(frames) < 2:
-        return None
-    previous = _gray(frames[0])
-    previous_mafd = 0.0
-    for index in range(1, len(frames)):
-        gray = _gray(frames[index])
-        mafd = float((gray - previous).abs().mean())
-        previous = gray
-        if scene_score(previous_mafd, mafd) > CUT_THRESHOLD:
-            return index
-        previous_mafd = mafd
-    return None
+
+    def __init__(self):
+        self._previous = None
+        self._previous_mafd = 0.0
+
+    def is_cut(self, frame):
+        """这一帧相对上一帧是不是硬切。流的第一帧没有上一帧，永远不是。"""
+        gray = _gray(frame)
+        if self._previous is None:
+            self._previous = gray
+            return False
+        mafd = float((gray - self._previous).abs().mean())
+        self._previous = gray
+        cut = scene_score(self._previous_mafd, mafd) > CUT_THRESHOLD
+        self._previous_mafd = mafd
+        return cut
