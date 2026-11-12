@@ -36,14 +36,10 @@
 
 <a href="mv-studio.png"><img src="mv-studio.png" width="560" alt="MV 视频制作"></a>
 
-## 需要自行准备的外部依赖
+## 外部组件与许可说明
 
-本仓库不含以下内容，请按各自许可自行获取：
-
-- **ComfyUI-H3-Motion-Context**（GPLv3）：导演台的潜空间续写算术、钉帧切片、栅格校对依赖它。仓库内 `_h3mc/` 为随包保留的一份实现，请同时遵守其自带的 `LICENSE`。
-- **MiniMax H3 模型权重**：遵循 MiniMax H3 Community License，有地域与用途限制，不随本仓库分发。
-- **NVIDIA VFX / DLSS / Topaz 相关引擎与二进制**：专有组件，不随本仓库分发。相关节点在未安装引擎时不会生效。
-- **字体**：界面字体请用系统自带或自行取得授权。
+- **ComfyUI-H3-Motion-Context**（GPLv3）：导演台的潜空间续写算术、钉帧切片、栅格校对依赖它。仓库内 `_h3mc/` 已随包内置一份实现，遵循其自带 `LICENSE`；如需上游更新可自行替换。
+- **MiniMax H3 模型权重**（MiniMax H3 Community License，含地域与营收门槛限制）、**NVIDIA VFX / DLSS / Topaz 专有引擎与二进制**、**字体**：不随本仓库分发，需按各自许可自行获取；相关节点未装引擎时不会生效。
 
 ## 许可
 
