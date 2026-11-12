@@ -44,9 +44,9 @@
 ## 联系与更新
 
 - B 站主页：[班长captain](https://space.bilibili.com/15838129?spm_id_from=333.788.0.0)
-- 微信：扫码添加好友
+- 微信：点开下方二维码放大后扫码
 
-![微信二维码](wechat-qr.png)
+<a href="wechat-qr.png"><img src="wechat-qr.png" width="285" alt="微信二维码"></a>
 
 ## 问题反馈
 
