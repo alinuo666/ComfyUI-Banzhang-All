@@ -249,6 +249,9 @@ BASE_SHORT_EDGE = 768
 MAX_PIXELS = 768 * 1344
 REF_IMAGE_MAX_LONG_EDGE = 4096    # 图片参考长边上限（视频参考不再设上限）
 REF_MIN_LONG_EDGE = 32            # 参考长边下限（与画布 32 对齐一致）
+# 原图档（raw）按官方 MiniMax H3 规则：参考图短边封顶 2048（官方 REF_IMAGE_SHORT_EDGE）。
+# 与上面的长边上限是两套口径——raw 走官方短边，match/自定义仍走包内长边。
+REF_IMAGE_SHORT_EDGE = 2048
 
 
 def _fit_long(value):
@@ -257,6 +260,12 @@ def _fit_long(value):
     向下而不是四舍五入：源素材比档位小时不该被放大，round 会把 1005 抬到 1008。
     """
     return max(CANVAS_MULTIPLE, (int(value) // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+
+
+def _round_canvas(value):
+    """四舍五入对齐到 32（下限 32）——官方参考图/视频用的对齐方式。
+    与 _fit_long（向下）区分：原图档按官方 round，否则会比官方少 1~31px。"""
+    return max(CANVAS_MULTIPLE, round(value / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
 
 
 def _ref_size(value, cap, fallback):
@@ -268,6 +277,8 @@ def _ref_size(value, cap, fallback):
     text = "" if value is None else str(value).strip().lower()
     if text == "match":
         return "match"
+    if text == "raw":
+        return "raw"          # 原图档：按官方规则原样发（短边封顶），不归一成数字
     if text == "max":
         return int(cap) if cap is not None else REF_IMAGE_MAX_LONG_EDGE
     try:
@@ -613,7 +624,14 @@ def _video_target_size(vw, vh, size_mode, canvas_long, ref_scale=1.0):
 
     size_mode 为 "match"（长边跟随画布）或一个正整数（不设上限，仅长边等比、
     永不放大原始尺寸）。视频多帧、成倍吃显存，数值越大占显存越高，请按需设置。
+    "raw"（原图档）例外：走官方 adapt_canvas（短边 768、面积上限、round 32），
+    源视频比官方目标更小则原样 round——官方对参考视频根本没有尺寸选项，固定这套。
     """
+    if size_mode == "raw":
+        cw, ch = adapt_canvas(vw, vh)
+        if vw * vh < cw * ch:
+            cw, ch = _round_canvas(vw), _round_canvas(vh)
+        return cw, ch
     target = _ref_target_long(size_mode, canvas_long, ref_scale)
     scale = min(1.0, target / max(vw, vh))
     return _fit_long(vw * scale), _fit_long(vh * scale)
@@ -2286,9 +2304,15 @@ class CSGlideCast:
             h, w = img.shape[1], img.shape[2]
             # 固定长边档位 / match（跟随画布长边）/ max；ref_scale 是二采/三采
             # 条件的档位倍数（1.0 = 与主档位相同）
-            target = _ref_target_long(size_mode, max(width, height), ref_scale)
-            scale = min(1.0, target / max(w, h))   # never upscale, all tiers share this
-            tw, th = _fit_long(w * scale), _fit_long(h * scale)
+            if size_mode == "raw":
+                # 原图档：官方 max 规则——短边封顶 2048、round 32、永不放大、
+                # 不乘二采/三采倍数（官方 max 是安全上限，不是画质档位）。
+                scale = min(1.0, REF_IMAGE_SHORT_EDGE / min(w, h))
+                tw, th = _round_canvas(w * scale), _round_canvas(h * scale)
+            else:
+                target = _ref_target_long(size_mode, max(width, height), ref_scale)
+                scale = min(1.0, target / max(w, h))   # never upscale, all tiers share this
+                tw, th = _fit_long(w * scale), _fit_long(h * scale)
             # 参考图编码缓存（20261023 P1 性能专项）：同文件 + 同编码尺寸直接复用
             # 缩放张量与视频 VAE 潜空间，改文案重跑 / 多分段 / 二采三采不再重复
             # PIL 解码 + lanczos 缩放 + VAE 编码。缓存键与缓存策略见文件前部
@@ -4167,6 +4191,11 @@ class CSGlideCast:
             hd_cond = cond
             hd_ok = False
             log("【放大重绘条件】没有参考素材可重编码 —— 端口与基础条件完全相同")
+        elif cfg["ref_image_size"] == "raw":
+            hd_cond = cond
+            hd_ok = False
+            log("【放大重绘条件】原图档不参与倍数放大 —— 参考已按官方上限原样编码，"
+                "端口与基础条件完全相同")
         elif m <= 1.0 + 1e-6:
             hd_cond = cond
             hd_ok = False

@@ -85,15 +85,27 @@ export function installListeners(ui) {
       sh.state.width = nw;
       sh.state.height = nh;
       sh.state.ratio = ui.st.ratio;
-      /* 参考图尺寸也是段级状态：以前只同步宽高 / 比例，段里缺这个字段时
-         parseInitial 会回落 "match"（跟随画布），全部渲染从第 2 段起就变。
-         跟着整片同步一次，切段回填不会再掉回默认值。 */
-      sh.state.ref_image_size = ui.st.ref_image_size;
     }
+    /* 参考尺寸（图片+视频）也整片同步，理由见 syncRefSizeToAll。 */
+    syncRefSizeToAll();
     if (stale > 0) {
       flash(`⚠ 画布已整片改为 ${nw}×${nh}：有 ${stale} 段是按旧尺寸渲染的，`
         + `续拍潜空间不能缩放。请在时间轴上从第 1 段起重跑（每段重抽一次，`
         + `pins 会自动接新版），全部段重跑完之前直接跑后面的段会报尺寸不符。`);
+    }
+  };
+
+  /* 参考尺寸（图片+视频）是段级状态，但用户按"整片统一"理解它（与画布尺寸一致）。
+     改它时必须同步到所有段：否则全部渲染从第 2 段起读各自旧值，parseInitial 回落
+     "match"，自定义/原图档静默失效（20261112 用户报障）。视频以前连画布同步都漏了，
+     这里一并补上。 */
+  const syncRefSizeToAll = () => {
+    const p = ui.proj();
+    if (!p || !Array.isArray(p.shots)) return;
+    for (const sh of p.shots) {
+      if (!sh.state) continue;
+      sh.state.ref_image_size = ui.st.ref_image_size;
+      sh.state.ref_video_size = ui.st.ref_video_size;
     }
   };
 
@@ -229,17 +241,21 @@ export function installListeners(ui) {
   };
 
   const refSnap = (v, cap) => Math.max(REF_MIN, Math.min(cap, Math.round(v / REF_STEP) * REF_STEP));
-  ui.chkRef.onchange = () => {
-    ui.st.ref_image_size = ui.chkRef.checked ? "match" : refSnap(Math.max(ui.st.width, ui.st.height), REF_IMAGE_MAX);
-    ui.render(); ui.commit();
+  /* 下拉选档：match/raw 直接落字符串；custom 用当前画布长边起一个默认值，
+     用户再在数值框里改。每次改完整片同步，全部渲染各段才一致。 */
+  ui.selRef.onchange = (v) => {
+    ui.st.ref_image_size = v === "custom"
+      ? refSnap(Math.max(ui.st.width, ui.st.height), REF_IMAGE_MAX) : v;
+    syncRefSizeToAll(); ui.render(); ui.commit();
   };
-  ui.inRef.onchange = () => { ui.st.ref_image_size = refSnap(+ui.inRef.value || REF_MIN, REF_IMAGE_MAX); ui.render(); ui.commit(); };
+  ui.inRef.onchange = () => { ui.st.ref_image_size = refSnap(+ui.inRef.value || REF_MIN, REF_IMAGE_MAX); syncRefSizeToAll(); ui.render(); ui.commit(); };
   ui.inScale.onchange = () => { ui.st.ref_scale_hd = clampRefScale(ui.inScale.value); ui.render(); ui.commit(); };
-  ui.chkVRef.onchange = () => {
-    ui.st.ref_video_size = ui.chkVRef.checked ? "match" : refSnap(Math.max(ui.st.width, ui.st.height), REF_VIDEO_MAX);
-    ui.render(); ui.commit();
+  ui.selVRef.onchange = (v) => {
+    ui.st.ref_video_size = v === "custom"
+      ? refSnap(Math.max(ui.st.width, ui.st.height), REF_VIDEO_MAX) : v;
+    syncRefSizeToAll(); ui.render(); ui.commit();
   };
-  ui.inVRef.onchange = () => { ui.st.ref_video_size = refSnap(+ui.inVRef.value || REF_MIN, REF_VIDEO_MAX); ui.render(); ui.commit(); };
+  ui.inVRef.onchange = () => { ui.st.ref_video_size = refSnap(+ui.inVRef.value || REF_MIN, REF_VIDEO_MAX); syncRefSizeToAll(); ui.render(); ui.commit(); };
   ui.fpsRef.onchange = () => { ui.st.ref_video_fps = clampRefFps(+ui.fpsRef.value); ui.render(); ui.commit(); };
 
 

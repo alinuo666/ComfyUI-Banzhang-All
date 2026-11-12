@@ -84,7 +84,12 @@ export function installSettings(ui) {
   };
 
   const refCtl = el("div", "gcast-ctl");
-  const chkRef = el("input"); chkRef.type = "checkbox"; chkRef.title = "跟随画布长边";
+  const selRef = makeSelect(ui.node, "图片参考尺寸档位");
+  selRef.setOptions([
+    { label: "跟随画布", value: "match", note: "长边跟画布" },
+    { label: "原图", value: "raw", note: "原样发 · 短边≤2048" },
+    { label: "自定义", value: "custom", note: "指定长边" },
+  ]);
   const inRef = el("input"); inRef.type = "number"; inRef.step = REF_STEP; inRef.min = REF_MIN; inRef.max = REF_IMAGE_MAX;
   inRef.title = "图片参考的最长边（px）：等比缩放到长边不超过该值；比它小的图片原样编码，不放大。";
   /* 放大重绘（二采/三采）条件的参考档位倍数：属于「参考素材怎么编码」的参数，
@@ -97,10 +102,15 @@ export function installSettings(ui) {
   const refNote = el("div", "gcast-read");
   /* 「放大倍数」移到高级区：它属于"调过一次就再也不动"的参数，摆在这一行会
      挤掉本行真正常用内容的空间（见下面的 gcast-adv）。 */
-  refCtl.append(chkRef, el("span", "gcap", "跟随画布"), inRef);
+  refCtl.append(selRef.el, inRef);
 
   const vrefCtl = el("div", "gcast-ctl");
-  const chkVRef = el("input"); chkVRef.type = "checkbox"; chkVRef.title = "跟随画布长边";
+  const selVRef = makeSelect(ui.node, "视频参考尺寸档位");
+  selVRef.setOptions([
+    { label: "跟随画布", value: "match", note: "长边跟画布" },
+    { label: "原图", value: "raw", note: "官方 · 短边768" },
+    { label: "自定义", value: "custom", note: "指定长边" },
+  ]);
   const inVRef = el("input"); inVRef.type = "number"; inVRef.step = REF_STEP; inVRef.min = REF_MIN; inVRef.max = REF_VIDEO_MAX;
   inVRef.title = "视频参考的最长边（px）：等比缩放到长边不超过该值；比它小的视频原样编码，不放大。";
   const vrefNote = el("div", "gcast-read");
@@ -110,7 +120,7 @@ export function installSettings(ui) {
   /* 视频参考一行并进「抽帧帧率」：这两项同属视频参考的采样设置，
      原来单独占一行把卡片撑高、又和上行控件重复了「视频参考」的语义。 */
   /* 同上：「抽帧帧率」移入高级区。 */
-  vrefCtl.append(chkVRef, el("span", "gcap", "跟随画布"), inVRef);
+  vrefCtl.append(selVRef.el, inVRef);
 
   /* 绑定必须放在上面所有输入框都声明完之后：const 声明前引用会抛 TDZ
      （Cannot access before initialization），整个面板连带工作流加载一起中止。 */
@@ -412,6 +422,6 @@ export function installSettings(ui) {
 
   /* 挂出去：别的块通过 ui.<名> 取。放在最后 —— 等同于原来在这一块
      结束时才声明完，之前的块拿不到，之后的块拿得到。 */
-  Object.assign(ui, { row, field, canvasCtl, selRatio, selSize, inW, inH, canvasNote, lenCtl, inLen, lenNote, lenRange, autoWidth, refCtl, chkRef, inRef, inScale, refNote, refLabel, vrefCtl, chkVRef, inVRef, vrefNote, vrefLabel, fpsRef, fpsNote, fRef, fVRef, adv, advBd, advScaleNote, inpPinHead, inpPinTail, ctxBar, segSel, fillSegSel, btnUnlinkAll,
+  Object.assign(ui, { row, field, canvasCtl, selRatio, selSize, inW, inH, canvasNote, lenCtl, inLen, lenNote, lenRange, autoWidth, refCtl, selRef, inRef, inScale, refNote, refLabel, vrefCtl, selVRef, inVRef, vrefNote, vrefLabel, fpsRef, fpsNote, fRef, fVRef, adv, advBd, advScaleNote, inpPinHead, inpPinTail, ctxBar, segSel, fillSegSel, btnUnlinkAll,
     segActs, segActBtns, paintSegActBar, setCard, setHd, setBd, segTitle, flWrap, flHd, flSub, flBd, flGrid, rightCol, studioRow });
 }

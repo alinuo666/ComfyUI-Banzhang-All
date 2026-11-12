@@ -136,20 +136,23 @@ export function installView(ui) {
     }
 
     const canvasLong = Math.max(ui.st.width, ui.st.height);
-    renderRefControl(ui.chkRef, ui.inRef, ui.refNote, ui.st.ref_image_size, canvasLong, REF_IMAGE_MAX);
+    renderRefControl(ui.selRef, ui.inRef, ui.refNote, ui.st.ref_image_size, canvasLong, REF_IMAGE_MAX);
     ui.inScale.value = ui.st.ref_scale_hd;
     /* 倍数 >1 时把「重编码后的有效长边」显示出来——这才是二采三采真正拿到的
        参考清晰度，只看左侧档位会以为没变。与后端 _ref_target_long 同口径
        （match → 画布长边 × 倍数）。
        写在倍数自己的读出位（高级区），不再追加到上面「图片参考」那行：控件
        和它的结果必须挨在一起，追加到常用行是"值在这儿、原因在那儿"。 */
-    if (ui.st.ref_scale_hd > 1) {
+    if (ui.st.ref_image_size === "raw") {
+      /* 原图档按官方上限原样编码，不乘二采/三采倍数（与后端 raw 分支同口径）。 */
+      ui.advScaleNote.innerHTML = `<b>原图档不乘倍数</b>`;
+    } else if (ui.st.ref_scale_hd > 1) {
       const base = ui.st.ref_image_size === "match" ? canvasLong : +ui.st.ref_image_size;
       ui.advScaleNote.innerHTML = `有效长边 <b>${Math.round(base * ui.st.ref_scale_hd)}px</b>`;
     } else {
       ui.advScaleNote.innerHTML = `<b>不额外编码</b>`;
     }
-    renderRefControl(ui.chkVRef, ui.inVRef, ui.vrefNote, ui.st.ref_video_size, canvasLong, REF_VIDEO_MAX);
+    renderRefControl(ui.selVRef, ui.inVRef, ui.vrefNote, ui.st.ref_video_size, canvasLong, REF_VIDEO_MAX);
     ui.fpsRef.value = ui.st.ref_video_fps;
     /* 数值已显示在输入框里，读出位不再回显"21 fps"这类重复——只保留状态提示；
        单位语义由行首的"抽帧帧率"四字承担。 */

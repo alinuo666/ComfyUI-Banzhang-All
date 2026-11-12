@@ -150,7 +150,8 @@ export function findRatio(w, h, ratios = RATIOS) {
 
 /* Reference sizing: a free LONG-edge value in px (32-aligned), plus a
  * "match" switch that tracks the canvas long edge. Images clamp at 4096;
- * video has no upper cap (Infinity makes the clamp a no-op). "跟随画布" = match. */
+ * video has no upper cap (Infinity makes the clamp a no-op). "跟随画布" = match.
+ * "raw"（原图）是第三档：按官方短边封顶（图 2048 / 视频 768）原样发，不走长边。 */
 export const REF_STEP = 32, REF_MIN = 32;
 export const REF_IMAGE_MAX = 4096, REF_VIDEO_MAX = Infinity;
 /* 参考视频采样帧率：24=不抽帧；往低调（如 12/8）在时长不变时减少参考帧数、
@@ -176,6 +177,7 @@ export const clampRefScale = (v) => {
  * a plain number transparently; "max" still maps to the cap. */
 export const normRefSize = (v, cap, fallback) => {
   if (v === "match") return "match";
+  if (v === "raw") return "raw";
   if (v === "max") return Number.isFinite(cap) ? cap : REF_IMAGE_MAX;
   const n = Number(v);
   if (Number.isFinite(n) && n > 0) {
@@ -184,17 +186,19 @@ export const normRefSize = (v, cap, fallback) => {
   return fallback;
 };
 
-/* Paint one ref-size control: checkbox on ⇄ "跟随画布" plus a number input.
- * The input always stays live so its native up/down steppers work exactly like
- * the canvas width/height; editing it while following auto-flips to a fixed
- * size. A note describes the effective long edge. */
-export const renderRefControl = (chk, input, note, value, canvasLong, cap) => {
+/* 回填一个参考尺寸控件：三选下拉（跟随画布 match / 原图 raw / 自定义 custom）
+ * + 数值框。只有「自定义」时数值框可编辑；match/raw 时灰掉，避免用户改了数
+ * 却以为生效（实际档位不是自定义）。note 读出当前档的有效尺寸。
+ * sel 是 makeSelect 返回的包装（.value 可读写），不是原生 <select>。 */
+export const renderRefControl = (sel, input, note, value, canvasLong, cap) => {
   const isMatch = value === "match";
-  chk.checked = isMatch;
-  input.value = isMatch ? canvasLong : value;
-  /* 只读出有效长边：跟随状态已由勾选框 + "跟随画布" 小标题表达，note 再写一遍
-     既重复又会让视频卡那一行放不下（会被省略号截断）。 */
-  note.innerHTML = `<b>长边 ${isMatch ? canvasLong : value}px</b>`;
+  const isRaw = value === "raw";
+  sel.value = isMatch ? "match" : isRaw ? "raw" : "custom";
+  input.disabled = isMatch || isRaw;
+  input.value = isMatch ? canvasLong : isRaw ? "" : value;
+  note.innerHTML = isMatch ? `<b>长边 ${canvasLong}px</b>`
+    : isRaw ? `<b>原图 · 官方上限</b>`
+    : `<b>长边 ${value}px</b>`;
 };
 
 /* Frame counts on the 17k+5 grid, one entry per integer second band.
