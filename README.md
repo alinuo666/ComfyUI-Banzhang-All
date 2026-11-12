@@ -20,6 +20,10 @@
 
 <a href="desk-media-rack.png"><img src="desk-media-rack.png" width="560" alt="H3 文案台与媒体架"></a>
 
+**MV 视频制作**：4 段续写配合音频波形，按节拍排片与逐段预览。
+
+<a href="mv-studio.png"><img src="mv-studio.png" width="560" alt="MV 视频制作"></a>
+
 ## 需要自行准备的外部依赖
 
 本仓库不含以下内容，请按各自许可自行获取：
