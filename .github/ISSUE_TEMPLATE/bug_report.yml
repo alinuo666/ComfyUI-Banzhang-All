@@ -1,0 +1,66 @@
+name: 问题反馈
+description: 提交 bug 或使用问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请确认两件事：
+        1. 改过 `.py` 后已**完全重启 ComfyUI**（只刷新网页没用），改过 `js/` 再按 `Ctrl+F5`。
+        2. 报错信息从**终端最后一行往上**复制，越完整越好；截图文字没法搜，尽量贴原文。
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 问题类型
+      options:
+        - 节点报错 / 任务失败
+        - 界面显示异常
+        - 功能与预期不符
+        - 安装与环境问题
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: comfyui_version
+    attributes:
+      label: ComfyUI 版本
+      description: 启动日志里有「ComfyUI version: x.x.x」一行
+      placeholder: 例如 0.45.0
+    validations:
+      required: true
+  - type: input
+    id: python_version
+    attributes:
+      label: Python 版本
+      description: 启动日志里有「Python version: ...」一行
+      placeholder: 例如 3.12.12
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: 显卡与显存
+      placeholder: 例如 RTX 3090 24GB
+    validations:
+      required: true
+  - type: textarea
+    id: error_log
+    attributes:
+      label: 终端报错原文
+      description: 从终端复制，不要拍照或口述
+      placeholder: |
+        把报错前后的日志贴在这里
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开什么、连了什么、点了什么，到出现什么，一步一步写
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 已完全重启 ComfyUI 后仍能复现，且已粘贴终端报错原文
+          required: true
