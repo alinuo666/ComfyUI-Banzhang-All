@@ -1,0 +1,8 @@
+# 班长全家桶 (Banzhang All-in-One) — 包身份声明，供 ComfyUI/Manager 识别节点包
+[project]
+name = "comfyui-banzhang-all"
+description = "班长全家桶 (Banzhang All-in-One) — 音频/视频/文本/显存管理等节点整合包"
+version = "2.1.1"
+
+[tool.comfy]
+DisplayName = "班长全家桶 (Banzhang All-in-One)"

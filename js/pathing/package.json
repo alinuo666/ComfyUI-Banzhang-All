@@ -1,0 +1,4 @@
+{
+  "//": "仅用于让 node 以 ESM 解析本目录的 .js（跑 js/pathing/test/run.mjs）。ComfyUI 拷贝整个 js/ 目录到 web 下，浏览器不读此文件。",
+  "type": "module"
+}

@@ -1,0 +1,31 @@
+# ===== 二进制资产：体积大、极少变，不进代码存档 =====
+# wheels 已实测 634MB，tools(ffmpeg) 392MB，semantic_bridge 模型 58.7MB，Fonts 18MB
+/wheels/
+/tools/
+/Fonts/
+/semantic_bridge/
+
+# ===== Python 运行缓存 =====
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== 运行时产物：每次运行都会变，进存档只会污染 diff =====
+/caches/
+/ui-preview/
+
+# ===== 自测脚本的中间产物 =====
+# 用例会把源码剥掉 import 后落盘成临时模块再动态 import，跑完自删；
+# 异常中断时会残留。20261025 之前 _selftest_tmp_send_refs.mjs 就是被
+# 当成"备份脚本"误提交进库的，别再让同类东西进来。
+tests/js/_selftest_tmp_*
+tests/js/_selftest_mods/
+tests/js/_tmp_*
+tests/js/_cross_cases.json
+
+# ===== 编辑器 / 系统杂项 =====
+*.log
+*.tmp
+Thumbs.db
+desktop.ini
+.DS_Store

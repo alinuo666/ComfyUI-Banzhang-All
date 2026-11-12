@@ -1,0 +1,38 @@
+{
+  "source": "https://huggingface.co/MATLOWAI/H3-Dials",
+  "license": "MiniMax H3 Community License Agreement (见 LICENSE-MiniMax-H3-Community.txt / NOTICE)",
+  "note": "每支 dial 是一根有符号滑块：负推 A 侧、正推 B 侧，0 为中性透传。useful=官方推荐强度，cap=该侧滑块端点上限（有 overcook 取 overcook，否则 useful×1.5；负侧未标定则回退正侧）。",
+  "styles": [
+    {"name":"冻结 ↔ 疾冲","file":"h3_motion.safetensors","neg":"冻结","pos":"疾冲","neg_useful":1.0,"neg_cap":1.5,"pos_useful":1.0,"pos_cap":1.5,"group":"常用","audio":"注意","ref2v":"可用","desc":"左端近乎静止，右端大幅运动；超过 1.5 会重排场景"},
+    {"name":"淡化 ↔ 压迫","file":"h3_evil_dread.safetensors","neg":"淡化","pos":"压迫","neg_useful":1.0,"neg_cap":1.5,"pos_useful":1.0,"pos_cap":1.5,"group":"常用","audio":"安全","ref2v":"可用","desc":"左端氛围松开，右端生出不安预感，不依赖角色"},
+    {"name":"温和 ↔ 阴森","file":"h3_evil_sinister.safetensors","neg":"温和","pos":"阴森","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"常用","audio":"危险","ref2v":"可用","desc":"右端面部阴影与逼近剪影；会压坏台词，慎用"},
+    {"name":"平光 ↔ 戏剧光","file":"h3_dramatic_light.safetensors","neg":"平光","pos":"戏剧光","neg_useful":3.0,"neg_cap":4.5,"pos_useful":3.0,"pos_cap":4.5,"group":"常用","audio":"安全","ref2v":"可用","desc":"左端均匀平光，右端白闪、碎片、硬反差"},
+    {"name":"常规 ↔ 命中闪白","file":"h3_impact_frame.safetensors","neg":"常规","pos":"闪白","neg_useful":4.5,"neg_cap":8.0,"pos_useful":4.5,"pos_cap":8.0,"group":"常用","audio":"注意","ref2v":"可用","desc":"全程版；官方 0.5 秒命中脉冲本节点不做，强度高会把整段变成水墨"},
+    {"name":"满色 ↔ 抽色","file":"h3_colour_drain.safetensors","neg":"满色","pos":"抽色","neg_useful":4.0,"neg_cap":6.0,"pos_useful":4.0,"pos_cap":6.0,"group":"常用","audio":"安全","ref2v":"可用","desc":"右端满色转平灰，角色保持不变"},
+    {"name":"赛璐璐 ↔ 水墨","file":"h3_ink_wash.safetensors","neg":"赛璐璐","pos":"水墨","neg_useful":2.0,"neg_cap":3.0,"pos_useful":2.0,"pos_cap":3.0,"group":"常用","audio":"安全","ref2v":"不可用","desc":"右端黑白水墨；接参考图时完全无效，请改用抽色"},
+    {"name":"无风 ↔ 风暴","file":"h3_storm.safetensors","neg":"无风","pos":"风暴","neg_useful":2.5,"neg_cap":3.75,"pos_useful":2.5,"pos_cap":3.75,"group":"常用","audio":"危险","ref2v":"可用","desc":"右端风、尘、能量弧，不带雨；会连带改音轨"},
+    {"name":"朴素 ↔ 光环","file":"h3_aura.safetensors","neg":"朴素","pos":"光环","neg_useful":2.5,"neg_cap":3.0,"pos_useful":2.5,"pos_cap":3.0,"group":"常用","audio":"危险","ref2v":"可用","desc":"右端光环与飞尘；会推镜头、音轨明显变响"},
+
+    {"name":"自然 ↔ 诡异","file":"h3_evil_creepy.safetensors","neg":"自然","pos":"诡异","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"注意","ref2v":"可用","desc":"右端不自然的宽笑、微妙错误的动作、过于洁净的空间"},
+    {"name":"温和 ↔ 冷酷","file":"h3_evil_cold.safetensors","neg":"温和","pos":"冷酷","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"安全","ref2v":"可用","desc":"右端冰冷、算计、无情绪"},
+    {"name":"克制 ↔ 癫狂","file":"h3_evil_unhinged.safetensors","neg":"克制","pos":"癫狂","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"危险","ref2v":"可用","desc":"右端狂野眼神；即使低强度也可能嘶吼、逼近"},
+    {"name":"坦率 ↔ 魅惑","file":"h3_evil_seductive.safetensors","neg":"坦率","pos":"魅惑","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"安全","ref2v":"可用","desc":"右端笑里藏刀，台词仍清晰"},
+    {"name":"完好 ↔ 腐化","file":"h3_evil_corrupted.safetensors","neg":"完好","pos":"腐化","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"安全","ref2v":"可用","desc":"右端衰败与锈蚀慢慢渗进画面"},
+    {"name":"规矩 ↔ 顽劣","file":"h3_evil_impish.safetensors","neg":"规矩","pos":"顽劣","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"进阶","audio":"安全","ref2v":"可用","desc":"右端恶作剧式调皮，反派里最轻的一档"},
+    {"name":"写实 ↔ 迷幻","file":"h3_psychedelic.safetensors","neg":"写实","pos":"迷幻","neg_useful":2.5,"neg_cap":3.75,"pos_useful":2.5,"pos_cap":3.75,"group":"进阶","audio":"注意","ref2v":"可用","desc":"右端霓虹彩虹漩涡；特写人物上高强度会改服装"},
+    {"name":"平直 ↔ 扭曲","file":"h3_space_warp.safetensors","neg":"平直","pos":"扭曲","neg_useful":2.5,"neg_cap":3.75,"pos_useful":2.5,"pos_cap":3.75,"group":"进阶","audio":"注意","ref2v":"可用","desc":"右端法环变螺旋隧道；与迷幻叠加会吞掉画面"},
+    {"name":"无符 ↔ 法阵","file":"h3_arcane_sigils.safetensors","neg":"无符","pos":"法阵","neg_useful":2.0,"neg_cap":3.0,"pos_useful":2.0,"pos_cap":3.0,"group":"进阶","audio":"安全","ref2v":"可用","desc":"右端地面浮现巨大符文魔法阵与子阵"},
+
+    {"name":"锐利 ↔ 柔和","file":"h3_blur_moving_edges_hook.safetensors","neg":"锐利","pos":"柔和","neg_useful":3.0,"neg_cap":4.5,"pos_useful":3.0,"pos_cap":4.5,"group":"实验室","audio":"注意","ref2v":"可用","desc":"运动边缘硬↔软；实验项，极端值会改身份，不是标定的运动模糊"},
+    {"name":"油画 ↔ 像素","file":"h3_x_oil_pixel.safetensors","neg":"油画","pos":"像素","neg_useful":1.5,"neg_cap":2.25,"pos_useful":2.5,"pos_cap":3.75,"group":"实验室","audio":"安全","ref2v":"可用","desc":"左端写实年代剧，右端逐步变成像素游戏关卡"},
+    {"name":"怀旧 ↔ 故障","file":"h3_x_datamosh.safetensors","neg":"怀旧","pos":"故障","neg_useful":3.0,"neg_cap":4.5,"pos_useful":2.25,"pos_cap":2.5,"group":"实验室","audio":"注意","ref2v":"可用","desc":"右端主体清晰、背景碎成故障马赛克；再高会变成纯故障"},
+    {"name":"鲜明 ↔ 回忆","file":"h3_x_memory_present.safetensors","neg":"鲜明","pos":"回忆","neg_useful":3.0,"neg_cap":4.5,"pos_useful":3.0,"pos_cap":4.5,"group":"实验室","audio":"安全","ref2v":"可用","desc":"左端明艳当下，右端雾气弥漫的褪色记忆"},
+    {"name":"秩序 ↔ 熵","file":"h3_x_order_entropy.safetensors","neg":"秩序","pos":"熵","neg_useful":3.0,"neg_cap":4.5,"pos_useful":3.0,"pos_cap":4.5,"group":"实验室","audio":"注意","ref2v":"可用","desc":"左端整洁安静，右端碎屑飞尘与奔跑"},
+    {"name":"猫头鹰 ↔ 章鱼","file":"h3_x_owl_octopus.safetensors","neg":"猫头鹰","pos":"章鱼","neg_useful":2.5,"neg_cap":4.5,"pos_useful":2.5,"pos_cap":4.5,"group":"实验室","audio":"安全","ref2v":"可用","desc":"需要画面里本来就有动物，否则不生效"},
+    {"name":"默片 ↔ 赛博","file":"h3_x_silentfilm_cyberpunk.safetensors","neg":"默片","pos":"赛博","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":3.0,"group":"实验室","audio":"注意","ref2v":"可用","desc":"年代与场景整体切换；右端到 3 会换掉角色"},
+    {"name":"数字 ↔ VHS","file":"h3_x_vhs.safetensors","neg":"数字","pos":"VHS","neg_useful":1.5,"neg_cap":2.25,"pos_useful":1.5,"pos_cap":2.25,"group":"实验室","audio":"安全","ref2v":"可用","desc":"右端 4:3 加黑边与旧式物件，不是磁带噪点"},
+    {"name":"鲜艳 ↔ 旧胶片","file":"h3_x_film_artifact.safetensors","neg":"鲜艳","pos":"旧胶片","neg_useful":3.0,"neg_cap":4.5,"pos_useful":3.0,"pos_cap":4.5,"group":"实验室","audio":"安全","ref2v":"可用","desc":"官方标注为负面结果：只得到冷调，没有颗粒"},
+    {"name":"对照左 ↔ 对照右","file":"h3_x_template_placebo.safetensors","neg":"对照左","pos":"对照右","neg_useful":1.0,"neg_cap":1.5,"pos_useful":1.0,"pos_cap":1.5,"group":"实验室","audio":"安全","ref2v":"可用","desc":"无意义对照，用来验证其他风格不是随便一推造成的"},
+    {"name":"暖 ↔ 阴森","file":"h3_x_sinister_noview.safetensors","neg":"暖","pos":"阴森","neg_useful":1.0,"neg_cap":1.5,"pos_useful":1.0,"pos_cap":1.5,"group":"实验室","audio":"危险","ref2v":"可用","desc":"对照组：模板里去掉镜头措辞，效果与阴森几乎一致"}
+  ]
+}

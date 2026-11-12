@@ -1,0 +1,108 @@
+{
+ "clip_l": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+   "type": "qwen_image"
+  }
+ },
+ "unet_l": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "Qwen-Image-2.1/rayQwen21编辑强化_turboV13Int8convrot.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "vae_l": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+  }
+ },
+ "rack": {
+  "class_type": "BanzhangProducerRack",
+  "inputs": {
+   "工程名": "未命名短片",
+   "视图": "生图参考",
+   "当前段": "",
+   "生图参考别名": "",
+   "引用清单": ""
+  }
+ },
+ "qwen": {
+  "class_type": "CSGlideImageCastCS",
+  "inputs": {
+   "qwen_data": "",
+   "clip": [
+    "clip_l",
+    0
+   ],
+   "vae": [
+    "vae_l",
+    0
+   ],
+   "refs": [
+    "rack",
+    0
+   ]
+  }
+ },
+ "ks": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 9,
+   "steps": 6,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 1.0,
+   "model": [
+    "unet_l",
+    0
+   ],
+   "positive": [
+    "qwen",
+    0
+   ],
+   "negative": [
+    "qwen",
+    1
+   ],
+   "latent_image": [
+    "qwen",
+    2
+   ]
+  }
+ },
+ "decode": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "ks",
+    0
+   ],
+   "vae": [
+    "vae_l",
+    0
+   ]
+  }
+ },
+ "n2a_in": {
+  "class_type": "BanzhangProducerLibraryIn",
+  "inputs": {
+   "工程名": "未命名短片",
+   "组编号": "a1",
+   "别名": "主角",
+   "类型": "全局角色（每段都可能出现）",
+   "归属段": "",
+   "视图名": "主锚",
+   "主锚": true,
+   "图片": [
+    "decode",
+    0
+   ],
+   "模式": "入库并选图",
+   "手动选用编号": 0
+  }
+ }
+}

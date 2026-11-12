@@ -1,0 +1,60 @@
+# 👨‍🏫 班长全家桶 (Banzhang All-in-One) - 依赖清单
+# 安装命令: pip install -r requirements.txt
+
+# ==================== 核心依赖 (必需) ====================
+torch>=1.12.0
+numpy>=1.21.0
+Pillow>=9.0.0
+
+# ==================== 音频处理依赖 ====================
+# 用于音频循环收集器、音频定长与补齐节点
+# (通常 ComfyUI 已包含)
+
+# ==================== 图像/视频处理依赖 ====================
+# 用于视频-图像信号桥接器
+imageio>=2.9.0
+imageio-ffmpeg>=0.4.0
+# 用于「视频合并」节点编码 MP4/MOV/MKV/WEBM 视频
+# (PyAV: ffmpeg 库随 Python 包自带, 无需系统安装 ffmpeg; GIF/WEBP 动图走 Pillow)
+av>=12.0.0
+
+# ==================== API 调用依赖 ====================
+# 用于 Banana2 图像编辑 API 节点
+requests>=2.25.0
+urllib3>=1.26.0
+
+# ==================== 字幕/语音依赖 (可选) ====================
+# 用于智能语音转脚本节点 (Qwen3-ASR)
+# 如需使用语音转录功能，需单独安装:
+# qwen-asr>=1.0.0
+
+# ==================== 其他工具依赖 ====================
+# difflib - Python 标准库，无需安装
+# re - Python 标准库，无需安装
+# json - Python 标准库，无需安装
+# os, sys - Python 标准库，无需安装
+
+# ==================== RTX 视频特效依赖 (可选，约 400MB) ====================
+# 用于 🔍 RTX 超分降噪 / 🌈 RTX 转HDR / 🎞️ RTX 视频插帧 三个节点
+# 默认不强制装：包很大，且只对 NVIDIA RTX 显卡有意义。
+# ComfyUI 首次启动会尝试自动安装（设环境变量 BANZHANG_NO_AUTO_PIP=1 可关闭），
+# 也可以双击插件目录里的 Install_RTX_VFX_Deps.bat 手动装。
+#
+# 注意：公共 PyPI（含华为/清华/中科大镜像）上 nvidia-vfx 只有 4.8KB 空壳，
+# 真正的 wheel 只在 NVIDIA 官方源发布，必须带 --extra-index-url：
+#   pip install nvidia-vfx --extra-index-url https://pypi.nvidia.com
+# 离线环境：把 nvidia_vfx-*.whl 放进本目录的 wheels/ 文件夹即可自动本地安装。
+# nvidia-vfx>=0.2
+
+# ==================== Qwen3VL / GGUF 本地推理依赖 (可选，约 228MB) ====================
+# 用于 🍭 Qwen3VL 模型配置 + 🤖 AI 全能生成 在 GGUF(llama.cpp) 模式下本地推理。
+# 只有选用 GGUF 模型时才需要；HF(transformers) 模式不需要。
+# ComfyUI 启动时若未安装会自动装（设 BANZHANG_NO_AUTO_PIP=1 可关闭），
+# 运行 GGUF 时也会再懒检查一次。
+# 离线环境：把 llama_cpp_python-*-win_amd64.whl（CUDA 预编译版）放进 wheels/ 即可。
+# Windows 直接 pip 装的多半是 CPU 版或要现地编译，建议用随包自带的 wheel。
+# llama-cpp-python>=0.3.36
+
+# ==================== 开发工具依赖 ====================
+# 用于日志控制台 SSE 推送
+aiohttp-sse>=2.0.0
