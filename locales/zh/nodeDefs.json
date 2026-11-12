@@ -1,0 +1,19 @@
+{
+  "MiniMaxH3MotionContextSaveLatent": {
+    "display_name": "⚠️ H3 续拍存档（第三方原版·非班长版）",
+    "inputs": {
+      "latent": { "name": "潜空间" },
+      "filename_prefix": { "name": "保存路径" },
+      "clip_index": { "name": "本片段编号" },
+      "archive_enabled": { "name": "启用存档" }
+    }
+  },
+  "BanZhang_H3_ClipArchive": {
+    "display_name": "💾 H3 续拍存档",
+    "inputs": {
+      "latent": { "name": "潜空间" },
+      "顺序锚": { "name": "顺序锚" },
+      "archive_enabled": { "name": "启用存档" }
+    }
+  }
+}

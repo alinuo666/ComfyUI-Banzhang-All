@@ -148,13 +148,25 @@ function updateState(node) {
     box.classList.toggle("bzh3d-warn", warn);
 }
 
-// 高度是推导值：取 DOM 实测，交给框架 computeSize 汇总；可增可减，configure 后重算。
+// 高度是推导值：量内容层 inner（块级、高度只随内容变），不量外层 wrap ——
+// wrap 会被前端套上 h-full / flex:1，高度由容器反推，量它永远量不到真实内容。
+// DOM 挂载发生在 onMounted+nextTick，创建/Configure 时量到的是 0，
+// 所以未挂载时用结构估算兜底，挂载后由 ResizeObserver 补一次实测。
+function estimateHeight(node) {
+    const pro = isPro(node);
+    const rows = Math.min(node._h3Rows?.length || 1, MAX_ROWS);
+    return 72 + rows * (pro ? 127 : 29);
+}
+
 function refresh(node) {
     updateState(node);
-    const wrap = node._h3Wrap;
+    const inner = node._h3Inner;
     const domW = node._h3DomW;
-    if (!wrap || !domW) return;
-    const h = Math.max(50, wrap.scrollHeight + 4);
+    if (!inner || !domW) return;
+    const laidOut = inner.isConnected && inner.getBoundingClientRect().height > 0;
+    // +4 是框架给每个 widget 留的间隙：Vue 主体高度不含它，不补内容底边会越界 4px。
+    const h = Math.max(40, (laidOut ? inner.scrollHeight : estimateHeight(node)) + 4);
+    node._h3H = h;
     domW.computeSize = () => [node.size[0], h];
     domW.computeLayoutSize = () => ({ minHeight: h, maxHeight: undefined, minWidth: 0 });
     node._h3Fixing = true;
@@ -301,7 +313,7 @@ function buildRow(node, row) {
 }
 
 function rebuildPanel(node) {
-    const wrap = node._h3Wrap;
+    const wrap = node._h3Inner;
     if (!wrap) return;
     wrap.innerHTML = "";
     wrap.appendChild(buildModeBar(node));
@@ -360,8 +372,37 @@ function setupPanel(node) {
     wrap.className = "bzh3d-wrap";
     wrap.addEventListener("mousedown", (e) => e.stopPropagation());
     wrap.addEventListener("keydown", (e) => e.stopPropagation());
+    const inner = document.createElement("div");
+    inner.className = "bzh3d-inner";
+    wrap.appendChild(inner);
     node._h3Wrap = wrap;
-    node._h3DomW = node.addDOMWidget("h3_dial_panel", "div", wrap, { serialize: false });
+    node._h3Inner = inner;
+    // margin=0：旧引擎的 DOM 容器高度 = computedHeight - 2*margin，默认 margin=10
+    // 会让容器比面板内容矮 20px，底部按钮/状态行被挤出节点下边框。
+    node._h3DomW = node.addDOMWidget("h3_dial_panel", "div", wrap, { serialize: false, margin: 0 });
+    // 内容层首次挂载、增删行、切模式都会触发这里，补上创建时量不到的高度。
+    // wrap 也观察：旧引擎挂载瞬间容器宽度还是 0，内容会先折行量出假高度，
+    // 宽度落定那一下必须重测；refresh 只读 inner，不会跟容器尺寸形成反馈环。
+    const ro = new ResizeObserver(() => refresh(node));
+    ro.observe(inner);
+    ro.observe(wrap);
+    const prevRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        ro.disconnect();
+        return prevRemoved ? prevRemoved.apply(this, arguments) : undefined;
+    };
+    // 兜底对账：标签页被隐藏时 ResizeObserver 不派发，画布每次真正绘制时
+    // 比一次内容高与已报高，有差才写，避免挂载瞬间的假高度一直留着。
+    const prevDraw = node.onDrawForeground;
+    node.onDrawForeground = function (ctx) {
+        const r = prevDraw ? prevDraw.apply(this, arguments) : undefined;
+        const inner2 = this._h3Inner;
+        if (inner2 && inner2.isConnected && inner2.getBoundingClientRect().height > 0 &&
+            Math.abs(inner2.scrollHeight + 4 - (this._h3H || 0)) > 1) {
+            refresh(this);
+        }
+        return r;
+    };
     const i = node.widgets.indexOf(node._h3DomW);
     if (i > 0) node.widgets.splice(0, 0, node.widgets.splice(i, 1)[0]);
     // 刷新时用 properties 里的宽度真值，不把 Vue 覆盖后的窄宽度当成新真值。
@@ -390,7 +431,7 @@ app.registerExtension({
             this.properties = this.properties || {};
             if (!this.properties.h3DialPro) this.properties.h3DialPro = "简版";
             restoreRows(this);
-            if (this._h3Wrap) rebuildPanel(this);
+            if (this._h3Inner) rebuildPanel(this);
             syncConfig(this);
             return r;
         };

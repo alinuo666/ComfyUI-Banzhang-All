@@ -10,6 +10,7 @@ import numpy as np
 import comfy.utils
 import folder_paths
 
+from .graphic_guard import protect_frame
 from .shotcut import ShotCutDetector
 from .tiling import axis_alphas, axis_tiles, stitch
 from .video_io import CODECS, PRESETS, FrameSequenceReader, VideoReader, VideoWriter
@@ -168,6 +169,8 @@ def stream_upscale(
                     outputs[index] = np.clip(blended, 0, 255).round().astype(np.uint8)
 
             keep = len(outputs) - tail
+            for index in range(keep):
+                outputs[index] = protect_frame(frames[index], outputs[index])
             writer.write(outputs[:keep], audio)
             pending = outputs[keep:] if tail else None
             written += keep
