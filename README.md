@@ -8,6 +8,16 @@
 2. **完全重启 ComfyUI**（只刷新网页不生效）。改过 `js/` 里的文件再加 `Ctrl+F5`。
 3. Python 依赖见 `requirements.txt`。
 
+## 界面预览
+
+**H3 导演台**：多段续写、成片监视、时间轴与参数集中在一处。
+
+<a href="director-studio.jpg"><img src="director-studio.jpg" width="560" alt="H3 导演台"></a>
+
+**H3 文案台 ＋ H3 媒体架**：分段文案编辑与参考素材管理。
+
+<a href="desk-media-rack.png"><img src="desk-media-rack.png" width="560" alt="H3 文案台与媒体架"></a>
+
 ## 需要自行准备的外部依赖
 
 本仓库不含以下内容，请按各自许可自行获取：
