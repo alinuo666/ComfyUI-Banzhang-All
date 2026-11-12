@@ -38,6 +38,8 @@
 
 ## 外部组件与许可说明
 
+- **模型网盘（夸克）**：作者已把本插件所需的全部模型汇总在一个网盘，直接下载即可：
+  [https://pan.quark.cn/s/70186cdde3ab?pwd=Lqse](https://pan.quark.cn/s/70186cdde3ab?pwd=Lqse)（提取码已含在链接里）。
 - **ComfyUI-H3-Motion-Context**（GPLv3）：导演台的潜空间续写算术、钉帧切片、栅格校对依赖它。仓库内 `_h3mc/` 已随包内置一份实现，遵循其自带 `LICENSE`；如需上游更新可自行替换。
 - **MiniMax H3 模型权重**（MiniMax H3 Community License，含地域与营收门槛限制）、**NVIDIA VFX / DLSS / Topaz 专有引擎与二进制**、**字体**：不随本仓库分发，需按各自许可自行获取；相关节点未装引擎时不会生效。
 
