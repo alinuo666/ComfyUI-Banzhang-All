@@ -4,10 +4,13 @@
 """
 
 import os
+from itertools import chain
+
 import numpy as np
 import comfy.utils
 import folder_paths
 
+from .shotcut import first_cut
 from .tiling import axis_alphas, axis_tiles, stitch
 from .video_io import CODECS, PRESETS, FrameSequenceReader, VideoReader, VideoWriter
 
@@ -59,6 +62,40 @@ def _output_size(width, height, sr_ratio, upscale_width):
     return out_width, out_height
 
 
+def _shot_blocks(reader, chunk_len, overlap):
+    """按镜头边界产块，yield (frames, audio, 尾留帧数)。
+
+    尾留帧数＝本块末尾有几帧要留给下一块重算并交叉淡化。硬切处归零：把两个镜头叠在一起会出鬼影，
+    而且新镜头的第一帧必须自己当参考，不能沿用旧镜头的。
+    音频不按帧对齐（解封装读到哪算哪），所以整批随块发出、发过即清，总量与顺序都不变。
+    frames 为空的那一次是纯音频收尾：重采样器尾部样本只在最后一次空读里吐出来。
+    """
+    buf, audio = [], []
+    eof = False
+    while True:
+        while not eof and len(buf) < chunk_len:
+            got, got_audio = reader.read_chunk(chunk_len - len(buf))
+            audio.extend(got_audio)
+            if got:
+                buf.extend(got)
+            else:
+                eof = True
+        if not buf:
+            if audio:
+                yield [], audio, 0
+            return
+        cut = first_cut(buf)
+        if cut is not None:
+            yield buf[:cut], audio, 0
+            buf, audio = buf[cut:], []
+            continue
+        tail = 0 if eof else overlap
+        yield buf, audio, tail
+        if eof:
+            return
+        buf, audio = buf[len(buf) - tail:], []
+
+
 def stream_upscale(
     engine,
     reader,
@@ -85,11 +122,12 @@ def stream_upscale(
 
     writer = None
     try:
-        frames, audio = reader.read_chunk(chunk_len)
-        if not frames:
+        blocks = _shot_blocks(reader, chunk_len, overlap)
+        first = next(blocks, None)
+        if first is None or not first[0]:
             raise ValueError("RelayVSR: 输入视频没有可解码的帧")
 
-        height, width = frames[0].shape[-2:]
+        height, width = first[0][0].shape[-2:]
         out_width, out_height = _output_size(width, height, sr_ratio, upscale_width)
         tiles_y = axis_tiles(height, spatial_grid_rows, spatial_overlap, engine.geometry.wan_stride)
         tiles_x = axis_tiles(width, spatial_grid_cols, spatial_overlap, engine.geometry.wan_stride)
@@ -111,34 +149,26 @@ def stream_upscale(
         written = 0
         pending = None
 
-        while True:
+        for frames, audio, tail in chain((first,), blocks):
             check()
+            if not frames:
+                writer.write([], audio)
+                continue
             outputs = upscale_chunk(
                 engine, frames, sr_ratio, chunk_len, seed, tiles_y, tiles_x, y_alphas, x_alphas, check
             )
             if pending is not None:
                 for index, previous in enumerate(pending):
-                    weight = (index + 0.5) / overlap
+                    weight = (index + 0.5) / len(pending)
                     blended = previous.astype(np.float32) * (1.0 - weight) + outputs[index].astype(np.float32) * weight
                     outputs[index] = np.clip(blended, 0, 255).round().astype(np.uint8)
 
-            next_frames, next_audio = reader.read_chunk(chunk_len - overlap)
-            if next_frames:
-                if overlap:
-                    writer.write(outputs[:-overlap], audio)
-                    pending = outputs[-overlap:]
-                else:
-                    writer.write(outputs, audio)
-                frames = (frames[-overlap:] if overlap else []) + next_frames
-                audio = next_audio
-                written += len(outputs) - overlap
-            else:
-                writer.write(outputs, audio + next_audio)
-                written += len(outputs)
+            keep = len(outputs) - tail
+            writer.write(outputs[:keep], audio)
+            pending = outputs[keep:] if tail else None
+            written += keep
             if progress is not None:
                 progress.update_absolute(min(written, reader.frame_estimate))
-            if not next_frames:
-                break
 
         writer.finish()
         writer = None
