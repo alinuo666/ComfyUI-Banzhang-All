@@ -66,6 +66,18 @@
 
 <a href="wechat-qr.png"><img src="wechat-qr.png" width="285" alt="微信二维码"></a>
 
+## 支持一下
+
+如果这套节点省了时间，欢迎请作者喝杯咖啡。完全自愿，与功能无关。
+下方是**打赏码**（上方「联系与更新」里的是加好友二维码）。
+
+<table>
+  <tr>
+    <td align="center">微信支付<br><a href="wechat-reward.png"><img src="wechat-reward.png" width="200" alt="微信支付打赏码"></a></td>
+    <td align="center">支付宝<br><a href="alipay-reward.jpg"><img src="alipay-reward.jpg" width="200" alt="支付宝打赏码"></a></td>
+  </tr>
+</table>
+
 ## 问题反馈
 
 请用 GitHub Issues。提交时附上 ComfyUI 版本与终端最后几行报错。
