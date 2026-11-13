@@ -22,6 +22,7 @@
 """
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -37,7 +38,8 @@ except Exception:      # pragma: no cover
 DB_FILENAME = "project.db"
 # v3（20261025）：shots.shot_uid 唯一 —— 一段的 uid 全局只能登记一次。
 # 事故背景见 _migrate_v3 的注释；v4 见 _migrate_v4（段词版本号）。
-SCHEMA_VERSION = 4
+# v5（20261113）：素材池身份 alias → 内容哈希，见 _ensure_asset_pool_pk。
+SCHEMA_VERSION = 5
 
 # 素材落在 input 下的哪个目录（与前端 csglide_cast_core.js 的 ASSET_SUBFOLDER
 # 同值；ComfyUI 在 Linux 上区分大小写，别改大小写）。
@@ -522,15 +524,21 @@ def _migrate(conn):
         ver = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     except Exception:
         ver = 0
-    if ver >= SCHEMA_VERSION:
-        return
     try:
         if ver < 3:
             _migrate_v3(conn)
         if ver < 4:
             _migrate_v4(conn)
+        if ver < 5:
+            _migrate_v5(conn)
     except Exception as e:
         print("[H3 Store] 迁移失败（库继续可用，仍是旧结构）：", e)
+    # 主键自检放在版本门控之外：_create_schema 会无条件把 user_version 推到最新，
+    # 存量库里存在「版本达标但结构没改对」的假成功，只有结构自检兜得住。
+    try:
+        _ensure_asset_pool_pk(conn)
+    except Exception as e:
+        print("[H3 Store] 素材池主键自检失败（库继续可用）：", e)
 
 
 def _migrate_v4(conn):
@@ -551,6 +559,96 @@ def _migrate_v4(conn):
             "ALTER TABLE segment_bindings "
             "ADD COLUMN desk_rev INTEGER NOT NULL DEFAULT 0")
     conn.commit()
+
+
+def _migrate_v5(conn):
+    """v5（20261113）：素材身份 alias → 内容哈希。全部逻辑在幂等自检函数里。"""
+    _ensure_asset_pool_pk(conn)
+
+
+def _backfill_pool_hashes(conn):
+    """给池条目补 hash：读得出 → sha256；读不出 → 路径占位；无文件 → 名字占位。
+
+    占位不能用纯 alias：两份同名不同内容的文件恰好都读不出时，纯 alias 占位
+    会撞成同一条，跨段覆盖原样复活。路径按文件唯一，兜底也不互顶。
+    """
+    for r in conn.execute("SELECT alias, file FROM asset_pool").fetchall():
+        f = str(r["file"] or "")
+        if not f:
+            h = "empty:" + str(r["alias"])
+        else:
+            h = _file_hash(f) or _path_key(f)
+        conn.execute("UPDATE asset_pool SET hash=? WHERE alias=?", (h, r["alias"]))
+
+
+def _rebuild_asset_pool(conn):
+    """SQLite 不能直改主键：改名 → 建新 → 拷贝（按 hash 去重）→ 删旧。
+
+    必须在回填之后跑：老库可能「两个名字指向同一份文件」，回填后同 hash，
+    不去重拷贝就撞主键。保留最新一条；段引用此时已指向 hash，不受影响。
+    """
+    conn.execute("ALTER TABLE asset_pool RENAME TO _asset_pool_old_v5")
+    conn.execute(
+        "CREATE TABLE asset_pool ("
+        " hash TEXT PRIMARY KEY,"
+        " alias TEXT NOT NULL DEFAULT '',"
+        " kind TEXT NOT NULL DEFAULT 'images',"
+        " file TEXT NOT NULL DEFAULT '',"
+        " params TEXT NOT NULL DEFAULT '{}',"
+        " updated_at REAL NOT NULL)")
+    conn.execute(
+        "INSERT INTO asset_pool(hash,alias,kind,file,params,updated_at) "
+        "SELECT hash,alias,kind,file,params,updated_at FROM ("
+        " SELECT *, ROW_NUMBER() OVER ("
+        "   PARTITION BY hash ORDER BY updated_at DESC, alias) AS rn"
+        " FROM _asset_pool_old_v5) WHERE rn=1")
+    conn.execute("DROP TABLE _asset_pool_old_v5")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_asset_pool_alias ON asset_pool(alias)")
+
+
+def _ensure_asset_pool_pk(conn):
+    """幂等自检：asset_pool 主键必须是 hash。不看 user_version，只看结构。
+
+    顺序定死：补列 → 回填池 hash → 按名字把 hash 写进段引用（老库 alias 唯一，
+    匹配必准）→ 重建主键。颠倒任何一步都会空 hash 撞主键或引用错配。
+    """
+    info = list(conn.execute("PRAGMA table_info(asset_pool)"))
+    if not info:
+        return
+    cols = {str(r["name"]) for r in info}
+    pk = [str(r["name"]) for r in info if r["pk"]]
+    if pk == ["hash"]:
+        # 主键已对：只防「池改了、引用表没补列」的半截迁移（外部补丁留下过）。
+        rcols = {str(r["name"]) for r in
+                 conn.execute("PRAGMA table_info(rack_refs)")}
+        if "hash" not in rcols:
+            conn.execute("ALTER TABLE rack_refs "
+                         "ADD COLUMN hash TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "hash" not in cols:
+            conn.execute("ALTER TABLE asset_pool "
+                         "ADD COLUMN hash TEXT NOT NULL DEFAULT ''")
+        rcols = {str(r["name"]) for r in
+                 conn.execute("PRAGMA table_info(rack_refs)")}
+        if "hash" not in rcols:
+            conn.execute("ALTER TABLE rack_refs "
+                         "ADD COLUMN hash TEXT NOT NULL DEFAULT ''")
+        _backfill_pool_hashes(conn)
+        conn.execute(
+            "UPDATE rack_refs SET hash = COALESCE("
+            " (SELECT p.hash FROM asset_pool p WHERE p.alias=rack_refs.alias), '')"
+            " WHERE hash=''")
+        _rebuild_asset_pool(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rack_refs_hash ON rack_refs(hash)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _migrate_v3(conn):
@@ -636,27 +734,32 @@ def _create_schema(conn):
         );
         CREATE INDEX IF NOT EXISTS idx_rack_file ON rack_slots(file);
 
-        -- 素材池（20261017）：一部片子的素材只在这里存一份，按「名字」收口。
-        -- 段不再各存一份 file，而是在 rack_refs 里记「第几格用了哪个名字」，
-        -- 读的时候 JOIN 展开。换一张图只改这里一行，引用它的所有段跟着一起
-        -- 变 —— 原来 9 段 × 28 张 = 252 条里 89% 是重复，改一次要改九次。
+        -- 素材池（20261017；v5 20261113 身份升级为内容哈希）：一部片子的素材只存一份。
+        -- 旧版按「名字」收口：同名不同内容跨段互相顶掉（第 10 段换图顶掉第 3/4 段）。
+        -- 现在 hash 是身份、alias 只是展示名（可重复）：同内容全片共享一条，
+        -- 同名不同内容物理隔离。段在 rack_refs 记「第几格用了哪个 hash」。
         CREATE TABLE IF NOT EXISTS asset_pool (
-            alias      TEXT PRIMARY KEY,   -- 素材名（别名优先，其次文件名主干）
+            hash       TEXT PRIMARY KEY,   -- 内容 sha256；读不出的文件用 path: 占位
+            alias      TEXT NOT NULL DEFAULT '',   -- 展示名（别名优先，其次文件名主干）
             kind       TEXT NOT NULL DEFAULT 'images',
             file       TEXT NOT NULL DEFAULT '',
             params     TEXT NOT NULL DEFAULT '{}',
             updated_at REAL NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_asset_pool_alias ON asset_pool(alias);
 
         CREATE TABLE IF NOT EXISTS rack_refs (
             cid      TEXT NOT NULL,
             kind     TEXT NOT NULL,
             slot_idx INTEGER NOT NULL,
-            alias    TEXT NOT NULL,        -- → asset_pool.alias
+            hash     TEXT NOT NULL DEFAULT '',   -- → asset_pool.hash
+            alias    TEXT NOT NULL DEFAULT '',   -- 旧代码读回退用
             updated_at REAL NOT NULL,
             PRIMARY KEY (cid, kind, slot_idx)
         );
         CREATE INDEX IF NOT EXISTS idx_rack_refs_alias ON rack_refs(alias);
+        -- idx_rack_refs_hash 不在此建：老库 rack_refs 还没有 hash 列，
+        -- 建索引会报 no such column；由 _ensure_asset_pool_pk 补列后再建。
 
         CREATE TABLE IF NOT EXISTS events (
             seq     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -745,13 +848,55 @@ def _create_schema(conn):
 # 小工具
 # --------------------------------------------------------------------------
 
-def _asset_key(item, kind, idx):
-    """素材池主键：别名 → 文件名主干 → 槽位兜底，三者必居其一。
+_hash_cache = {}      # (normpath, mtime, size) → sha256；文件没变不重读
 
-    素材池按「名字」收口，同一个名字在整部片子里只有一份 file。别名是用户在
-    媒体架上起的名字（陈九一、守缺斋后堂…），没起名就退回文件名主干
-    （ref2.jpg → ref2）——两张内容不同但同名的素材因此不会被互相顶掉，
-    代价是它们会共用一个池条目（真要分开就起不同别名，如「陈九一·近景」）。
+
+def _file_hash(path):
+    """文件内容 sha256 全文，与 csglide_asset_upload 同口径。读不出返回空串。
+
+    按 (路径,修改时间,大小) 缓存：媒体架保存频繁，视频参考是 GB 级，
+    每次都重读会把每次存架都拖成一次全盘读。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    key = (os.path.normcase(os.path.abspath(path)), st.st_mtime, st.st_size)
+    hit = _hash_cache.get(key)
+    if hit is not None:
+        return hit
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fp:
+            for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+                h.update(chunk)
+        out = h.hexdigest()
+    except OSError:
+        return ""
+    if len(_hash_cache) > 4096:
+        _hash_cache.clear()
+    _hash_cache[key] = out
+    return out
+
+
+def _path_key(file):
+    """读不出文件的身份占位：路径按文件唯一，不会像纯 alias 那样互撞。"""
+    return "path:" + os.path.normcase(os.path.abspath(file))
+
+
+def _pool_hash(file, kind, idx):
+    """池条目身份：内容哈希优先；读不出用路径；无文件用槽位号。"""
+    f = str(file or "")
+    if not f:
+        return "empty:%s:%d" % (kind, idx)
+    return _file_hash(f) or _path_key(f)
+
+
+def _asset_key(item, kind, idx):
+    """素材展示名：别名 → 文件名主干 → 槽位兜底，三者必居其一。
+
+    v5 起只管展示名，不再是身份（身份是 _pool_hash 的内容哈希），允许重复。
+    同名不同内容不再互相顶掉；要跨段共享就用同一份文件（同哈希天然共享）。
     """
     if isinstance(item, dict):
         al = item.get("alias")
@@ -1507,10 +1652,20 @@ def load_rack(d, cid):
             (cid,)).fetchone()[0] or 0
         rows = []
         if ts_ref and ts_ref >= ts_slot:
+            # hash 优先；没 hash 的旧引用按名字回退，只取最新一条 ——
+            # alias 不再唯一，直接 JOIN 会出重复行把槽位撑乱。
             rows = conn.execute(
-                "SELECT r.kind, r.slot_idx, p.file AS file, p.params AS params "
-                "FROM rack_refs r LEFT JOIN asset_pool p ON p.alias = r.alias "
-                "WHERE r.cid=? ORDER BY r.kind, r.slot_idx", (cid,)).fetchall()
+                "SELECT r.kind, r.slot_idx,"
+                " COALESCE(ph.file, pa.file) AS file,"
+                " COALESCE(ph.params, pa.params) AS params"
+                " FROM rack_refs r"
+                " LEFT JOIN asset_pool ph ON ph.hash=r.hash AND r.hash<>''"
+                " LEFT JOIN (SELECT alias, file, params FROM ("
+                "   SELECT alias, file, params, ROW_NUMBER() OVER ("
+                "     PARTITION BY alias ORDER BY updated_at DESC) AS rn"
+                "   FROM asset_pool) WHERE rn=1) pa"
+                "   ON pa.alias=r.alias AND r.hash=''"
+                " WHERE r.cid=? ORDER BY r.kind, r.slot_idx", (cid,)).fetchall()
             if not any((r["file"] or "") for r in rows):
                 rows = []   # 池被清空之类的异常：宁可退回槽位，也不出空架
         if not rows:
@@ -1545,8 +1700,9 @@ def load_rack(d, cid):
 def save_rack(d, cid, rack):
     """整段替换某段槽位：素材进池、段只存引用，并同步 rack_slots 镜像。
 
-    file 只写进 asset_pool 一份；rack_refs 记「这段第几格用了哪个名字」，读的
-    时候 JOIN 池展开。换一张图改池里一行，引用它的段全都跟着变。
+    素材身份是内容哈希（sha256）不是名字：同名不同内容＝两份素材，物理隔离，
+    跨段互相覆盖从结构上不可能；同内容整片共享一条池记录。
+    rack_refs 记「这段第几格用了哪个 hash」，读的时候 JOIN 池展开。
     rack_slots 仍整段重写一遍，作为老代码 / 外部脚本的镜像 —— 本模块不再读它，
     它落后于池也不会影响任何读取结果。
     """
@@ -1569,21 +1725,22 @@ def save_rack(d, cid, rack):
                     it = dict(item)
                     f = str(it.pop("file", "") or "")
                     key = _asset_key(item, kind, idx)
-                    # 同名素材整片只有一份：后写的一次生效（最新的便是权威）。
+                    h = _pool_hash(f, kind, idx)
+                    # 同内容素材整片只有一份：后写的一次生效（最新的便是权威）。
                     conn.execute(
-                        "INSERT INTO asset_pool(alias,kind,file,params,updated_at) "
-                        "VALUES(?,?,?,?,?) ON CONFLICT(alias) DO UPDATE SET "
-                        "kind=excluded.kind, file=excluded.file, "
+                        "INSERT INTO asset_pool(hash,alias,kind,file,params,updated_at) "
+                        "VALUES(?,?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET "
+                        "alias=excluded.alias, kind=excluded.kind, file=excluded.file, "
                         "params=excluded.params, updated_at=excluded.updated_at",
-                        (key, kind, f, _jdumps(it), now))
-                    refs.append((cid, kind, idx, key, now))
+                        (h, key, kind, f, _jdumps(it), now))
+                    refs.append((cid, kind, idx, h, key, now))
                     rows.append((cid, kind, idx, f, _jdumps(it), now))
             conn.executemany(
                 "INSERT INTO rack_slots(cid,kind,slot_idx,file,params,updated_at) "
                 "VALUES(?,?,?,?,?,?)", rows)
             conn.executemany(
-                "INSERT INTO rack_refs(cid,kind,slot_idx,alias,updated_at) "
-                "VALUES(?,?,?,?,?)", refs)
+                "INSERT INTO rack_refs(cid,kind,slot_idx,hash,alias,updated_at) "
+                "VALUES(?,?,?,?,?,?)", refs)
             if (rack or {}).get("fps") is not None:
                 _meta_set(conn, "rack.fps", rack.get("fps"))
             if (rack or {}).get("audio_out") is not None:
@@ -1612,47 +1769,101 @@ def load_all_racks(d):
 # --------------------------------------------------------------------------
 
 def load_pool(d):
-    """素材池全量：{alias: {"kind":…, "file":…, "params":…}}。"""
+    """素材池全量：{名字: {"kind","file","params","hash"}}。
+
+    名字现在可重复（同名不同内容）；重复时键加「#哈希8位」后缀区分，保证清单
+    不丢条目；换图时用带后缀的名字指定（见 set_asset_file）。
+    """
     conn = _connect(d, create=False)
     if conn is None:
         return {}
     with _lock_for(d):
         rows = conn.execute(
-            "SELECT alias,kind,file,params FROM asset_pool ORDER BY alias").fetchall()
+            "SELECT hash,alias,kind,file,params FROM asset_pool "
+            "ORDER BY alias, updated_at DESC").fetchall()
     out = {}
     for r in rows:
         it = _jloads(r["params"], {})
         if not isinstance(it, dict):
             it = {}
         it["file"] = r["file"]
-        out[r["alias"]] = {"kind": r["kind"], "file": r["file"], "params": it}
+        key = r["alias"]
+        if key in out:
+            key = "%s#%s" % (key, (r["hash"] or "")[:8])
+        out[key] = {"kind": r["kind"], "file": r["file"],
+                    "params": it, "hash": r["hash"] or ""}
     return out
 
 
+def _resolve_pool_entry(conn, alias):
+    """按展示名定位池行；重名时用「名字#哈希8位」后缀指定。
+
+    找不到返回 None；重名又没给后缀时抛 ValueError 列出候选 ——
+    让用户挑换哪一个，而不是悄悄改到第一条。
+    """
+    name, _, suffix = str(alias).partition("#")
+    if suffix:
+        rows = conn.execute(
+            "SELECT hash,alias,kind,file,params FROM asset_pool "
+            "WHERE alias=? AND hash LIKE ?", (name, suffix + "%")).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+        if not rows:
+            return None
+    else:
+        rows = conn.execute(
+            "SELECT hash,alias,kind,file,params FROM asset_pool "
+            "WHERE alias=? ORDER BY updated_at DESC", (name,)).fetchall()
+        if len(rows) == 1:
+            return rows[0]
+        if not rows:
+            return None
+    names = ["%s#%s" % (r["alias"], (r["hash"] or "")[:8]) for r in rows]
+    raise ValueError("「%s」有 %d 条同名素材，请用带后缀的名字指定其中一个：%s"
+                     % (alias, len(rows), "、".join(names)))
+
+
 def set_asset_file(d, alias, file):
-    """换图：改池里一行，引用它的段全部跟着变（含 rack_slots 镜像）。
+    """换图＝换绑：新文件按内容哈希落池，引用旧条目的段全部换绑到新哈希。
 
     返回被刷新的段数；池里没有这个名字返回 0（不凭空造条目）。
+    重名时用「名字#哈希8位」后缀指定；没给后缀会抛 ValueError 列出候选。
+    旧条目若不再被任何段引用就删掉，池里不留孤儿素材。
     """
     conn = _connect(d, create=True)
     now = time.time()
     with _lock_for(d):
         try:
             conn.execute("BEGIN IMMEDIATE")
-            cur = conn.execute(
-                "UPDATE asset_pool SET file=?, updated_at=? WHERE alias=?",
-                (str(file or ""), now, str(alias)))
-            if cur.rowcount == 0:
+            old = _resolve_pool_entry(conn, alias)
+            if old is None:
                 conn.commit()
                 return 0
+            new_file = str(file or "")
+            new_hash = _pool_hash(new_file, old["kind"], 0)
+            conn.execute(
+                "INSERT INTO asset_pool(hash,alias,kind,file,params,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET "
+                "alias=excluded.alias, file=excluded.file, "
+                "params=excluded.params, updated_at=excluded.updated_at",
+                (new_hash, old["alias"], old["kind"], new_file,
+                 old["params"] or "{}", now))
+            conn.execute(
+                "UPDATE rack_refs SET hash=?, updated_at=? WHERE hash=?",
+                (new_hash, now, old["hash"]))
             conn.execute(
                 "UPDATE rack_slots SET file=?, updated_at=? WHERE rowid IN ("
                 "  SELECT s.rowid FROM rack_slots s JOIN rack_refs r"
                 "    ON r.cid=s.cid AND r.kind=s.kind AND r.slot_idx=s.slot_idx"
-                "  WHERE r.alias=?)", (str(file or ""), now, str(alias)))
+                "  WHERE r.hash=?)", (new_file, now, new_hash))
+            if new_hash != old["hash"] and not conn.execute(
+                    "SELECT 1 FROM rack_refs WHERE hash=? LIMIT 1",
+                    (old["hash"],)).fetchone():
+                conn.execute("DELETE FROM asset_pool WHERE hash=?",
+                             (old["hash"],))
             n = conn.execute(
-                "SELECT COUNT(DISTINCT cid) FROM rack_refs WHERE alias=?",
-                (str(alias),)).fetchone()[0]
+                "SELECT COUNT(DISTINCT cid) FROM rack_refs WHERE hash=?",
+                (new_hash,)).fetchone()[0]
             conn.commit()
             return int(n or 0)
         except Exception:
@@ -1663,7 +1874,7 @@ def set_asset_file(d, alias, file):
 def migrate_rack_to_pool(d):
     """一次性迁移：把已有 rack_slots 抽成素材池 + 段引用（幂等，可重复跑）。
 
-    已存在的池条目用 INSERT OR IGNORE 保留（不覆盖用户后来改过的 file）；
+    已存在的池条目用 ON CONFLICT(hash) DO NOTHING 保留（不覆盖用户后来改过的 file）；
     引用行用 REPLACE 对齐最新槽位。返回 {"pool": 新增条数, "refs": 写入条数}。
     """
     conn = _connect(d, create=True)
@@ -1680,18 +1891,63 @@ def migrate_rack_to_pool(d):
                 if not isinstance(it, dict):
                     it = {}
                 key = _asset_key(dict(it, file=r["file"]), r["kind"], r["slot_idx"])
+                h = _pool_hash(r["file"], r["kind"], r["slot_idx"])
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO asset_pool(alias,kind,file,params,updated_at)"
-                    " VALUES(?,?,?,?,?)",
-                    (key, r["kind"], r["file"], _jdumps(it), r["updated_at"] or now))
+                    "INSERT INTO asset_pool(hash,alias,kind,file,params,updated_at)"
+                    " VALUES(?,?,?,?,?,?) ON CONFLICT(hash) DO NOTHING",
+                    (h, key, r["kind"], r["file"], _jdumps(it), r["updated_at"] or now))
                 n_pool += cur.rowcount
                 conn.execute(
-                    "INSERT OR REPLACE INTO rack_refs(cid,kind,slot_idx,alias,updated_at)"
-                    " VALUES(?,?,?,?,?)",
-                    (r["cid"], r["kind"], r["slot_idx"], key, r["updated_at"] or now))
+                    "INSERT OR REPLACE INTO rack_refs(cid,kind,slot_idx,hash,alias,updated_at)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (r["cid"], r["kind"], r["slot_idx"], h, key, r["updated_at"] or now))
                 n_ref += 1
             conn.commit()
             return {"pool": n_pool, "refs": n_ref}
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def downgrade_pool_to_v4(d):
+    """显式降级：素材池主键从 hash 退回 alias（v4 结构），供回滚旧代码用。
+
+    必须在新代码还在时跑它，然后再换回旧 csglide_store.py 并重启 ——
+    先换代码的话，下次连接又会自动升级回来，降级就白做了。
+    重名条目只留最新一条（旧结构装不下同名两条）；rack_refs 的 hash 列保留，
+    旧代码不读它、alias 仍同步写入，读回结果一致。返回是否执行了降级。
+    """
+    conn = _connect(d, create=False)
+    if conn is None:
+        return False
+    with _lock_for(d):
+        pk = [r[1] for r in conn.execute("PRAGMA table_info(asset_pool)")
+              if r[5]]
+        if pk != ["hash"]:
+            return False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ALTER TABLE asset_pool RENAME TO _asset_pool_v5")
+            conn.execute(
+                "CREATE TABLE asset_pool ("
+                "  alias TEXT PRIMARY KEY,"
+                "  kind TEXT NOT NULL DEFAULT 'images',"
+                "  file TEXT NOT NULL DEFAULT '',"
+                "  params TEXT NOT NULL DEFAULT '{}',"
+                "  updated_at REAL NOT NULL,"
+                "  hash TEXT NOT NULL DEFAULT '')")
+            conn.execute(
+                "INSERT INTO asset_pool(alias,kind,file,params,updated_at,hash) "
+                "SELECT alias,kind,file,params,updated_at,hash FROM ("
+                "  SELECT alias,kind,file,params,updated_at,hash, ROW_NUMBER() OVER ("
+                "    PARTITION BY alias ORDER BY updated_at DESC) AS rn"
+                "  FROM _asset_pool_v5) WHERE rn=1")
+            conn.execute("DROP TABLE _asset_pool_v5")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_pool_alias "
+                         "ON asset_pool(alias)")
+            conn.execute("PRAGMA user_version = 4")
+            conn.commit()
+            return True
         except Exception:
             conn.rollback()
             raise

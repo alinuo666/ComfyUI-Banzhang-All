@@ -26,6 +26,7 @@
  * ============================================================ */
 import {
   castProject, deskNodeOf, deskNodes, onCastChange, onDeskChange,
+  promptNodeOf, upstreamTextOf,
 } from "./bz_rack.js";
 import { MAX_SLOTS } from "./csglide_rack_core.js";
 import { normalizeRefs } from "./csglide_ref_text.js";
@@ -171,6 +172,36 @@ function markLabel(grid, base, n, known) {
   if (lab.textContent !== txt) lab.textContent = txt;
 }
 
+/* 图像编辑台兜底：画布上没有文案台时，读本架喂的图像编辑台的提示词。
+   按连线反查消费者（与 rack_sort.promptTexts 同口径），认 qwen_data widget。
+   prompt_text 接线时外部文本接管正面，读上游；否则读 qwen_data 的 global+prompt。 */
+function imageStudioText(ui) {
+  const graph = (ui.app && ui.app.graph) || null;
+  if (!graph || !graph.links) return "";
+  const eats = (n) => (n.inputs || []).some((s) => {
+    if (!s || s.link == null || !(s.type === "H3_REFS" || s.name === "refs")) return false;
+    const lk = graph.links[s.link];
+    return !!lk && lk.origin_id === ui.node.id;
+  });
+  const parts = [];
+  for (const n of graph._nodes || []) {
+    if (!n || n.id === ui.node.id || !eats(n)) continue;
+    const w = (n.widgets || []).find((x) => x.name === "qwen_data");
+    if (!w) continue;
+    let t = "";
+    const up = promptNodeOf(n);
+    if (up) t = String(upstreamTextOf(up) || "");
+    if (!t) {
+      try {
+        const d = JSON.parse(w.value || "{}");
+        t = [d.global, d.prompt].filter(Boolean).join("\n");
+      } catch (_) { t = ""; }
+    }
+    if (t && !parts.includes(t)) parts.push(t);
+  }
+  return parts.join("\n");
+}
+
 /* 读「本段文案」的唯一入口（抽出来给腾位也用 —— 两处各读一份，读的段不一样
    就是两台机器互相打架，20261024）。
    返回 { clip, text, known }：known=false 表示没读到文案，"谁被引用"没有答案。 */
@@ -197,6 +228,13 @@ export function deskTextFor(ui) {
   } catch (e) {
     desk = null;
     known = false;
+  }
+  /* 没有文案台时退回图像编辑台：画布上只接了编辑台也能亮/灰。 */
+  if (!known) {
+    try {
+      const t = imageStudioText(ui);
+      if (t) { text = t; known = true; }
+    } catch (_) { /* 装饰不许连累面板 */ }
   }
   return { clip, text, known };
 }

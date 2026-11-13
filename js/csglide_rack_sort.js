@@ -277,6 +277,15 @@ export function installSort(ui) {
         const w = (n.widgets || []).find((x) => x.name === "h3_data");
         try { t = (JSON.parse((w && w.value) || "{}").prompt) || ""; } catch (_) { t = ""; }
       }
+      /* 图像编辑台（qwen_data JSON）：global + prompt 拼成完整提示词。
+         不能落到下面的最长字符串启发式——那会把整份 JSON 当文本。 */
+      if (!t) {
+        const w = (n.widgets || []).find((x) => x.name === "qwen_data");
+        try {
+          const d = JSON.parse((w && w.value) || "{}");
+          t = [d.global, d.prompt].filter(Boolean).join("\n");
+        } catch (_) { t = ""; }
+      }
       if (!t && upstreamTextOf) t = upstreamTextOf(n);
       t = String(t || "");
       /* 写法归一化放在去重之前：`<Picture 1>` 与 `@图片1` 是同一种引用的两种

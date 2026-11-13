@@ -1,15 +1,16 @@
 /* ============================================================
- * 🎨 图像编辑台 (Image Studio) — Qwen-Image 2.1 / MOSS-Image 双模型
+ * 🎨 图像编辑台 (Image Studio) — Qwen-Image 2.1 / MOSS-Image / MiniMax H3 Image
  * ------------------------------------------------------------
  * 视觉与排版复用导演台同一份样式表（CAST_CSS）与同一套类名
  * （gcast-modebar / gcast-field / gcast-pwrap / gcast-chips …），
  * 只换主色（紫）以区别于 H3 家族。
  *
- * 一个节点服务两个模型家族，按接入的 CLIP 自动分流：
+ * 一个节点服务三个模型家族，按接入的 CLIP 自动分流：
  *  · Qwen-Image 2.1（qwen3vl_8b）——图片编辑，参考图是核心能力
- *  · MOSS-Image（qwen3.5_9b）——文生图，编码器**无视觉塔**，参考图不成立
- * 前端据此把 MOSS 模式下的参考图区置灰（保留但不生效），
- * 判别口径与后端 detect_family 同源：CLIPLoader 的 type。
+ *  · MOSS-Image（qwen3.5_9b）——文生图，参考图只走视觉 token（读过再画）
+ *  · MiniMax H3 Image（qwen3vl_32b）——文生图 + 图片编辑，负面用正面清零，
+ *    画布上限 8192，改写必须外接独立模型（主编码器截断 50 层不能出字）
+ * 前端据此调整控件可用性，判别口径与后端 detect_family 同源：CLIPLoader 的 type。
  *
  * 参考图不走面板槽位：素材统一由 🗂️ H3 媒体架 经 refs 端口喂入，
  * 槽位编号与媒体架格子永久绑定——图片落在哪格，@图片N 就指它。
@@ -36,17 +37,18 @@ import { installAssetBatch } from "./csglide_asset_batch.js";
 /* 别名展开的唯一权威纯函数（与后端 csglide_qwen.expand_aliases 同口径）。
    标签栏亮灭读它，保证「标签栏点亮」==「后端真的转译成 <imageN>」。 */
 import { expandAliasesText } from "./csglide_ref_text.js";
-import { onRackChange } from "./bz_rack.js";
+import { onRackChange, rackSlotsOf, rackNodeOf, emitDeskChange } from "./bz_rack.js";
 
 const NODE_ID = "CSGlideImageCastCS";
 const MIN_W = 620, MIN_H = 620;
-const STEP = 32, MAX_SIDE = 4096;
+const STEP = 32, MAX_SIDE = 4096, MAX_SIDE_H3 = 8192;
 
 /* 模型家族。前端读 CLIP 端口上游 CLIPLoader 的 type widget 判定，
    与后端 detect_family 同源（都源于 CLIPLoader 的 type）。读不到就
-   按 Qwen 模式显示——参考图区照常可用，运行时若真是 MOSS 由后端兜底。 */
+   按 Qwen 模式显示——参考图区照常可用，运行时若真是 MOSS/H3 由后端兜底。 */
 const FAM_MOSS = "moss";
 const FAM_QWEN21 = "qwen21";
+const FAM_H3IMAGE = "h3image";
 
 /* 改写用的默认系统提示词（与后端 MOSS_REWRITE_SYSTEM 同源；面板留空时
    由后端按模型家族给默认）。 */
@@ -88,7 +90,29 @@ RATIOS.forEach((r) => {
   r.sizes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
 });
 
+/* H3 Image 画布比例：顶档到 6272×2688（官方推荐上限），硬顶 8192。
+   模型调优面积 ~4MP（2048²），但支持更大；阶梯往下覆盖到 320。 */
+const H3_MAX_PIXELS = 6272 * 2688;
+const H3_SHORT_EDGES = [4096, 3584, 3072, 2880, 2560, 2304, 2048, 1792, 1536,
+                        1280, 1024, 896, 768, 640, 512, 384, 320];
+const H3_RATIOS = [
+  { label: "21:9", w: 6272, h: 2688 },
+  { label: "16:9", w: 5120, h: 2880 },
+  { label: "3:2",  w: 4800, h: 3200 },
+  { label: "4:3",  w: 4096, h: 3072 },
+  { label: "1:1",  w: 4096, h: 4096 },
+  { label: "3:4",  w: 3072, h: 4096 },
+  { label: "2:3",  w: 3200, h: 4800 },
+  { label: "9:16", w: 2880, h: 5120 },
+];
+H3_RATIOS.forEach((r) => {
+  r.sizes = sizeLadder(r, H3_SHORT_EDGES, H3_MAX_PIXELS, MAX_SIDE_H3);
+  r.sizes.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+});
+
 const snap = (v) => Math.max(STEP, Math.min(MAX_SIDE, Math.round((+v || 0) / STEP) * STEP));
+/* 只对齐不夹上限：load() 用它保留存档原值（H3 的 6000 不被截成 4096） */
+const align32 = (v) => Math.max(STEP, Math.round((+v || 0) / STEP) * STEP);
 
 /* 参考尺寸（最长边上限）的档位与缺省值；缺省与后端 REF_CAP_DEFAULT 同值 */
 const REF_CAPS = [0, 512, 768, 1024, 1280, 1536, 2048, 2560, 3072, 4096];
@@ -234,9 +258,10 @@ function buildUI(node) {
     ref_long: REF_LONG_DEFAULT,     // 跟随时的画布长边（px），只缩不放；0 = 用图片原尺寸
     ref_cap: REF_CAP_DEFAULT,       // 参考图最长边上限（px）；0 = 原尺寸（不限）
     alias: true,                    // 别名引用开关（与文案台同机制）；关 = 只认 @图片N
-    rewrite: false,                 // 提示词改写开关（由接入的 CLIP 自己改写）
+    rewrite: false,                 // 提示词改写开关
     rewrite_system: "",             // 改写的系统提示词；空 = 用模型家族的默认
     rewrite_max_length: 512,        // 改写输出上限（token）
+    rewrite_model: "",              // 改写模型文件名（同文案台机制）；空 = Qwen/MOSS 用主 CLIP
   };
   let dataWidget = null;
   let batch = null;               // 批量导入 / 片子级面板，buildUI 末尾装配
@@ -274,38 +299,25 @@ function buildUI(node) {
     const up = clipNodeOf(node);
     const t = (up && up.widgets && up.widgets.find((w) => w.name === "type")?.value) || "";
     if (t === "moss_image") return FAM_MOSS;
+    if (t === "minimax") return FAM_H3IMAGE;
     return FAM_QWEN21;
   }
+
+  /* 家族感知的画布上限与比例表：H3 到 8192，其余 4096。
+     shadow 模块级 snap——buildUI 内所有 snap 调用自动用当前家族的上限。 */
+  const maxSide = () => familyOf() === FAM_H3IMAGE ? MAX_SIDE_H3 : MAX_SIDE;
+  const snap = (v) => Math.max(STEP, Math.min(maxSide(), Math.round((+v || 0) / STEP) * STEP));
+  const activeRatios = () => familyOf() === FAM_H3IMAGE ? H3_RATIOS : RATIOS;
+  const activeMaxPixels = () => familyOf() === FAM_H3IMAGE ? H3_MAX_PIXELS : MAX_PIXELS;
 
   /* ---------------- 参考素材：来自 🗂️ H3 媒体架（refs 端口）----------------
      面板不自带上传槽位——素材统一在媒体架管理，一个媒体架可以喂多个节点。
      槽位编号与媒体架永久绑定：图片落在哪个格，@图片N 就指它。已接素材
-     展示成提示词名下的 chips（别名优先），点击即把引用写进提示词。 */
-  function rackNodeOf(n) {
-    const inputs = n.inputs || [];
-    const inp = inputs.find((s) => s && s.type === "H3_REFS" && s.link != null)
-      || inputs.find((s) => s && s.name === "refs" && s.link != null);
-    const graph = (typeof app !== "undefined" && app && app.graph) || null;
-    if (inp && graph && graph.links != null) {
-      const link = graph.links[inp.link];
-      if (link) {
-        const up = graph.getNodeById ? graph.getNodeById(link.origin_id) : null;
-        if (up) return up;
-      }
-    }
-    return n.getInputNode ? n.getInputNode("refs") : null;
-  }
-
-  let rackCache = { raw: null, images: [] };
+     展示成提示词名下的 chips（别名优先），点击即把引用写进提示词。
+     rackNodeOf / rackSlotsOf 走 bz_rack 共享口径：先读媒体架内存真值
+     （gmr.st），再退回 widget——rack_data 只存引用，直读 widget 会拿空架。 */
   function rackImages() {
-    const w = rackNodeOf(node);
-    const raw = (w && w.widgets && w.widgets.find((x) => x.name === "rack_data")?.value) || "";
-    if (raw === rackCache.raw) return rackCache.images;
-    let d = {};
-    try { d = JSON.parse(raw); } catch (_) { d = {}; }
-    const s = (d && d.slots) || {};
-    rackCache = { raw, images: Array.isArray(s.images) ? s.images : [] };
-    return rackCache.images;
+    return rackSlotsOf(node).slots.images;
   }
 
   const chips = el("div", "gcast-chips");
@@ -315,17 +327,21 @@ function buildUI(node) {
   function renderChips() {
     chips.replaceChildren();
     chipEls.clear();
+    const h3 = (familyOf() === FAM_H3IMAGE);
     let ord = 0;
     rackImages().forEach((slot, i) => {
       if (!slot || !slot.file) return;
       ord += 1;
       const token = `@图片${i + 1}`;
       const name = aliasPick(slot.alias);        // 显示优先用别名（认得出是哪张图）
+      const tag = h3 ? "引用后送" : `<image${ord}>`;
       const chip = el("button", "gcast-chip");
       const th = el("img");
       th.src = viewURL(slot.file, 256);
-      chip.append(th, el("span", "lbl", name || token), el("span", "sub", `<image${ord}>`));
-      chip.dataset.tip = `插入 ${name || token}（即 ${token}，编码器看到 <image${ord}>）\n${slot.file}`;
+      chip.append(th, el("span", "lbl", name || token), el("span", "sub", tag));
+      chip.dataset.tip = h3
+        ? `插入 ${name || token}（即 ${token}，提示词引用后送编码）\n${slot.file}`
+        : `插入 ${name || token}（即 ${token}，编码器看到 ${tag}）\n${slot.file}`;
       chip.onclick = () => insertToken((st.alias && name) ? name : token);
       chips.append(chip);
       chipEls.set(token, chip);
@@ -350,10 +366,12 @@ function buildUI(node) {
 
   function paintChips() {
     const used = usedTokens();
+    const h3 = (familyOf() === FAM_H3IMAGE);
     chipEls.forEach((chip, token) => {
       const on = used.has(token);
       chip.classList.toggle("on", on);
-      chip.title = `${on ? "已在提示词里提到" : "提示词里没提到（仍会作为参考图送出）"}`
+      const offMsg = h3 ? "提示词里没提到（H3 不送未引用的图）" : "提示词里没提到（仍会作为参考图送出）";
+      chip.title = `${on ? "已在提示词里提到" : offMsg}`
         + ` · 点一下插到光标处\n${chip.dataset.tip}`;
     });
   }
@@ -409,7 +427,15 @@ function buildUI(node) {
        LiteGraph 没有跨节点连线变更广播，只能在这个 tick 里查。 */
     const fam = familyOf();
     if (fam !== famSeen) {
+      const prev = famSeen;
       famSeen = fam;
+      /* 切到 H3 时画布还是 Qwen 默认 1024² → 自动跟到官方默认 2048²。
+         只在家族切换时做一次，用户之后手动设 1024 不会被覆盖。 */
+      if (fam === FAM_H3IMAGE && prev !== FAM_H3IMAGE
+          && st.canvas.w === 1024 && st.canvas.h === 1024) {
+        st.canvas = { w: 2048, h: 2048 };
+        commit();
+      }
       refresh();
     }
   }
@@ -475,10 +501,11 @@ function buildUI(node) {
     cbFollow.checked = st.canvas_from_ref;
     inLong.disabled = !st.canvas_from_ref;
     inLong.value = String(st.ref_long);
+    const hardMax = maxSide();
     followNote.innerHTML = st.canvas_from_ref
       ? (st.ref_long
         ? `<b>长边 ≤ ${st.ref_long} px</b> · 更大的图等比压下来`
-        : `<b>原尺寸</b> · 不缩放（4096 硬顶）`)
+        : `<b>原尺寸</b> · 不缩放（${hardMax} 硬顶）`)
       : `未启用 · 画布用上面的尺寸`;
   }
 
@@ -503,8 +530,11 @@ function buildUI(node) {
   })));
 
   /* 画布永远是一个明确尺寸：比例档位或自定义，缺省官方默认 1024² */
-  selRatio.setOptions(RATIOS.map((r) => ({ label: r.label, value: r.label, note: `${r.w} x ${r.h}` }))
-    .concat([{ label: "自定义", value: "custom" }]));
+  function paintRatioOptions() {
+    selRatio.setOptions(activeRatios().map((r) => ({ label: r.label, value: r.label, note: `${r.w} x ${r.h}` }))
+      .concat([{ label: "自定义", value: "custom" }]));
+  }
+  paintRatioOptions();
 
   function paintCanvas() {
     /* 跟随模式下画布由运行时决定：比例/尺寸/宽高全部停摆并置灰，避免
@@ -517,7 +547,8 @@ function buildUI(node) {
       return;
     }
     const w = st.canvas.w, h = st.canvas.h;
-    const fam = findRatio(w, h, RATIOS);
+    const ratios = activeRatios();
+    const fam = findRatio(w, h, ratios);
     selRatio.value = fam ? fam.label : "custom";
     if (fam) {
       const options = fam.sizes.map((z) => ({ label: `${z.w} x ${z.h}`, value: `${z.w}x${z.h}` }));
@@ -538,15 +569,13 @@ function buildUI(node) {
     inH.value = String(h);
     const mp = (w * h / 1e6).toFixed(2);
     canvasNote.innerHTML = `<b>${mp} MP</b> · ${(w / h).toFixed(2)}:1`;
-    /* 阶梯封顶 4K UHD 面积，但自定义输入放得更大。不拦，只提醒：面积翻一倍，
-       注意力与耗时是平方级上去的。 */
-    if (w * h > MAX_PIXELS) {
+    if (w * h > activeMaxPixels()) {
       canvasNote.insertAdjacentHTML("beforeend", ' · <span class="gcast-warn">面积偏大</span>');
     }
   }
 
   /* 参考尺寸读出：这一项不改变画布，只决定参考图进编码器时的最大边长。
-     没接媒体架时无从谈起，就直接说明白——免得用户以为设置没生效。 */
+     H3 模式用固定短边缩放（视觉 1024 / VAE [1024,2048]），此项不生效。 */
   function paintRef() {
     const cap = st.ref_cap;
     selRef.value = String(cap);
@@ -557,19 +586,27 @@ function buildUI(node) {
       : `<b>原尺寸</b> · 不设上限（4K 大图会照原样进编码器）`;
   }
 
-  /* MOSS 模式：参考图控件保留但置灰（见上面 refOff 的说明）。
-     判别口径与后端同源——CLIPLoader 的 type。 */
+  /* 模型家族决定的控件可用性：
+     MOSS — 参考图只走视觉 token（读过再画），chips/跟随/参考尺寸全置灰
+     H3   — 参考图正常用，但参考尺寸（最长边上限）不生效（H3 用固定短边缩放），
+            负面提示词不生效（H3 用正面清零）
+     Qwen — 全部正常 */
   refOff = () => {
-    const moss = (familyOf() === FAM_MOSS);
+    const fam = familyOf();
+    const moss = (fam === FAM_MOSS);
+    const h3 = (fam === FAM_H3IMAGE);
     chips.classList.toggle("gq-off", moss);
     fFollow.classList.toggle("gq-off", moss);
-    fRef.classList.toggle("gq-off", moss);
+    fRef.classList.toggle("gq-off", moss || h3);
     cbFollow.disabled = moss;
-    selRef.disabled = moss;
-    inRef.disabled = moss || !st.ref_cap;
+    selRef.disabled = moss || h3;
+    inRef.disabled = moss || h3 || !st.ref_cap;
     if (moss) {
       refNote.innerHTML = "<b>MOSS-Image 不支持参考图</b> · 编码器无视觉塔";
       followNote.innerHTML = "MOSS-Image 无参考图 · 用上面的画布尺寸";
+    } else if (h3) {
+      refNote.innerHTML = "<b>H3 固定短边缩放</b> · 视觉 1024 / VAE [1024, 2048]，此项不生效";
+      paintFollow();
     } else {
       paintRef();
       paintFollow();
@@ -577,12 +614,29 @@ function buildUI(node) {
     return moss;
   };
 
+  /* H3 负面提示词置灰：H3 用正面清零作负面，面板负面框不参与。 */
+  function paintNeg() {
+    const h3 = (familyOf() === FAM_H3IMAGE);
+    nHead.classList.toggle("gq-off", h3);
+    edNeg.node.classList.toggle("gq-off", h3);
+    edNeg.setReadonly(h3);
+    if (h3) {
+      nHead.title = "H3 Image 用正面清零作负面，此处不参与编码";
+    } else {
+      nHead.title = "";
+    }
+  }
+
   /* 画布/参考尺寸改动只影响尺寸相关的控件与读出；chips 与编辑器不动 */
-  const refresh = () => { paintFollow(); paintCanvas(); paintRead(); paintRef(); refOff(); };
+  const refresh = () => {
+    inW.max = inH.max = inLong.max = String(maxSide());
+    paintRatioOptions();
+    paintFollow(); paintCanvas(); paintRead(); paintRef(); refOff(); paintNeg(); paintHint(); paintRewrite();
+  };
 
   selRatio.onchange = (v) => {
     if (v === "custom") { st.canvas = { w: snap(inW.value), h: snap(inH.value) }; refresh(); commit(); return; }
-    const fam = RATIOS.find((r) => r.label === v);
+    const fam = activeRatios().find((r) => r.label === v);
     if (!fam) return;
     /* 换比例时留在原来那一档（面积最接近的一档），不要每次跳回最大 */
     const cur = st.canvas.w * st.canvas.h;
@@ -598,7 +652,7 @@ function buildUI(node) {
     refresh(); commit();
   };
   /* 预设比例下宽高锁在一起：改宽带动高，比例不会漂；只有自定义才各自独立 */
-  const activeRatio = () => findRatio(st.canvas.w, st.canvas.h, RATIOS);
+  const activeRatio = () => findRatio(st.canvas.w, st.canvas.h, activeRatios());
   inW.onchange = () => {
     const fam = activeRatio();
     const w = snap(inW.value);
@@ -686,6 +740,7 @@ function buildUI(node) {
     if (!node.properties) node.properties = {};
     node.properties.gqGlobal = gIn.value;
     commit();
+    emitDeskChange({ reason: "image-studio" });
   });
   /* 别让 Backspace / 数字键冒泡到画布触发快捷键 */
   gIn.addEventListener("keydown", (e) => e.stopPropagation());
@@ -695,7 +750,7 @@ function buildUI(node) {
 
   const mkEditor = (cls, placeholder, key) => makePromptEditor({
     cls, placeholder, mode: "qwen", view: previewURL, tokens: vocab,
-    onChange: (t) => { st[key] = t; paintChips(); commit(); },
+    onChange: (t) => { st[key] = t; paintChips(); commit(); emitDeskChange({ reason: "image-studio" }); },
   });
   const edPos = mkEditor("prompt",
     "描述要怎么改这张图。写 @图片1 / @图片2 来区分多张参考图。", "prompt");
@@ -715,27 +770,78 @@ function buildUI(node) {
 
   pWrap.append(pHead, gRow, chips, edPos.node, nHead, edNeg.node);
 
-  const hint = el("div", "gq-hint",
-    "参考图全部送出，不必在提示词里点名；@图片N 只是用来在文字里区分它们（会转写成 <imageN>）。"
-    + "点亮的标签 = 提示词里提到了它。别名（媒体架槽位里起的名字）可直接当引用写；"
-    + "\\别名 表示不展开；同一张图既写名字又写 @图片1 时，把「别名」关掉即可避免重复引用。");
+  const hint = el("div", "gq-hint", "");
+  function paintHint() {
+    const h3 = (familyOf() === FAM_H3IMAGE);
+    if (h3) {
+      hint.textContent = "H3 Image 只送提示词里 @图片N 引用的图（未引用的跳过，省显存）；"
+        + "引用后转写成 <Picture N>，序号按引用顺序重编。点亮的标签 = 提示词里提到了它。"
+        + "别名（媒体架槽位里起的名字）可直接当引用写；\\别名 表示不展开；"
+        + "同一张图既写名字又写 @图片1 时，把「别名」关掉即可避免重复引用。";
+    } else {
+      hint.textContent = "参考图全部送出，不必在提示词里点名；@图片N 只是用来在文字里区分它们（会转写成 <imageN>）。"
+        + "点亮的标签 = 提示词里提到了它。别名（媒体架槽位里起的名字）可直接当引用写；"
+        + "\\别名 表示不展开；同一张图既写名字又写 @图片1 时，把「别名」关掉即可避免重复引用。";
+    }
+  }
+  paintHint();
   pWrap.append(hint);
 
   /* ---------------- 提示词改写 ----------------
-     由接入的 CLIP 自己改写（它带 lm_head，能出字）——不另接 LLM 端口，
-     也不额外占显存。系统提示词留空时后端按模型家族给默认。 */
+     Qwen/MOSS 默认用接入的 CLIP 自己改写（带 lm_head，能出字）；
+     H3 Image 主编码器截断 50 层不能出字，必须外接独立模型（同文案台机制：
+     按文件名直连加载，不依赖画布连线）。系统提示词留空时后端按家族给默认。 */
   const rwWrap = el("div", "gq-rewrite");
   const rwHead = el("div", "gcast-phead");
   const cbRewrite = el("input"); cbRewrite.type = "checkbox";
-  cbRewrite.title = "开启后，正面提示词会先由接入的 CLIP 改写成更完整的画面描述，"
-    + "再送去编码。改写用同一份权重，不额外占显存。";
+  cbRewrite.title = "开启后，正面提示词会先改写成更完整的画面描述，再送去编码。"
+    + "Qwen/MOSS 用接入的 CLIP；H3 Image 用下面选的外接模型。";
   const rwLabel = el("span", "gq-cblbl", "提示词改写");
   rwLabel.style.cssText = "font-size:11px; white-space:nowrap; color:var(--h3-txt);";
-  const rwBadge = el("span", "gcast-extbadge", "由模型自己改写");
+  const rwBadge = el("span", "gcast-extbadge", "");
   rwBadge.style.display = "none";
-  rwBadge.title = "改写用的是接入的 CLIP（它带语言模型头），不需要另接 LLM 节点";
-  rwHead.append(cbRewrite, rwLabel, rwBadge);
+  const rwBtn = el("button", "gq-rwbtn");
+  rwBtn.type = "button";
+  rwBtn.textContent = "立即改写";
+  rwBtn.title = "不用跑画布，直接调后端改写当前提示词。结果写回提示词框。";
+  rwBtn.style.cssText = "margin-left:auto; font-size:11px; padding:2px 10px;"
+    + "color:var(--h3-txt); background:var(--h3-well); border:1px solid var(--h3-line);"
+    + "border-radius:6px; cursor:pointer; white-space:nowrap;";
+  rwHead.append(cbRewrite, rwLabel, rwBadge, rwBtn);
   rwWrap.append(rwHead);
+
+  /* 改写模型下拉（同文案台机制）：候选来自后端 /csglide_qwen/models。
+     空 = Qwen/MOSS 用主 CLIP 自己改写；H3 必须选一个（空时后端用默认 2b）。 */
+  const rwModelCtl = el("div", "gcast-ctl");
+  const rwModel = document.createElement("select");
+  rwModel.style.cssText = "flex:1; min-width:0; font:inherit; font-size:11px;"
+    + "color:var(--h3-txt); background:var(--h3-well); border:1px solid var(--h3-line);"
+    + "border-radius:6px; padding:2px 4px; outline:none;";
+  rwModel.title = "改写用的模型文件。Qwen/MOSS 留空 = 用接入的 CLIP 自己改写；"
+    + "H3 Image 必须外接（主编码器不能出字），留空 = 用默认 2b 模型。";
+  rwModelCtl.append(el("span", "gcap dim-x", "改写模型"), rwModel);
+  rwWrap.append(rwModelCtl);
+  /* 候选来自后端。拉取失败时只留「默认」一项，改写照常可用。 */
+  (async () => {
+    const put = (opts) => {
+      rwModel.replaceChildren(...opts.map(([v, t]) =>
+        Object.assign(document.createElement("option"), { value: v, textContent: t })));
+      rwModel.value = st.rewrite_model || "";
+    };
+    try {
+      const r = await api.fetchApi("/csglide_qwen/models");
+      const d = await r.json();
+      const list = Array.isArray(d.models) ? d.models : [];
+      const def = String(d.default || "");
+      const base = (n) => n.replace(/\\/g, "/").split("/").pop();
+      const opts = [["", "默认模型" + (def ? "（" + base(def) + "）" : "")]];
+      for (const n of list) opts.push([n, base(n)]);
+      if (st.rewrite_model && !opts.some((o) => o[0] === st.rewrite_model))
+        opts.push([st.rewrite_model, base(st.rewrite_model) + "（存档所选）"]);
+      put(opts);
+    } catch (_) { put([["", "默认模型"]]); }
+  })();
+  rwModel.onchange = () => { st.rewrite_model = rwModel.value; paintRewrite(); commit(); };
 
   const rwSys = el("textarea");
   rwSys.className = "gcast-rwsys";
@@ -754,18 +860,32 @@ function buildUI(node) {
   rwLenCtl.append(el("span", "gcap dim-x", "输出上限"), rwLen,
     el("span", "gcap dim-x", "token"));
   rwWrap.append(rwLenCtl);
+  const rwStatus = el("div", "gcast-read");
+  rwStatus.style.cssText = "font-size:11px; min-height:1em; margin-top:2px;";
+  rwWrap.append(rwStatus);
 
   function paintRewrite() {
     cbRewrite.checked = st.rewrite;
     rwSys.value = st.rewrite_system || "";
     rwLen.value = String(st.rewrite_max_length || 512);
+    rwModel.value = st.rewrite_model || "";
     const on = st.rewrite;
+    const h3 = (familyOf() === FAM_H3IMAGE);
     rwSys.disabled = !on;
     rwLen.disabled = !on;
+    rwModel.disabled = !on;
     rwWrap.classList.toggle("gq-off", !on);
     rwBadge.style.display = on ? "" : "none";
+    rwBadge.textContent = h3 ? "外接模型改写" : "由模型自己改写";
+    rwBadge.title = h3
+      ? "H3 Image 主编码器截断 50 层不能出字，改写用下面选的外接模型"
+      : "改写用的是接入的 CLIP（它带语言模型头），不需要另接 LLM 节点";
     rwNote.innerHTML = on
-      ? "改写后送去编码 · 用接入的 CLIP，不占额外显存"
+      ? (h3
+        ? "改写后送去编码 · 用外接模型（H3 主编码器不能出字）"
+        : (st.rewrite_model
+          ? "改写后送去编码 · 用外接模型 " + st.rewrite_model.replace(/\\/g, "/").split("/").pop()
+          : "改写后送去编码 · 用接入的 CLIP，不占额外显存"))
       : "未开启 · 提示词原样送去编码";
   }
   cbRewrite.onchange = () => { st.rewrite = cbRewrite.checked; paintRewrite(); commit(); };
@@ -775,6 +895,53 @@ function buildUI(node) {
     st.rewrite_max_length = n;
     rwLen.value = String(n);
     commit();
+  };
+  /* 「立即改写」按钮：不走画布运行，直接调后端 HTTP 接口改写当前提示词，
+     结果写回提示词框。与文案台同机制。 */
+  rwBtn.onclick = async () => {
+    if (promptNodeOf(node)) {
+      rwStatus.textContent = "外接提示词模式：正面由外部文本接管，请在外部节点改写";
+      return;
+    }
+    const t = st.prompt || "";
+    if (!t.trim()) { rwStatus.textContent = "提示词为空，没有可改写的内容"; return; }
+    rwBtn.disabled = true;
+    const old = rwBtn.textContent;
+    rwBtn.textContent = "改写中…";
+    rwStatus.textContent = "";
+    try {
+      const { raw } = rackSlotsOf(node);
+      const res = await api.fetchApi("/csglide_qwen/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: t,
+          system: st.rewrite_system || "",
+          model: st.rewrite_model || "",
+          max_length: st.rewrite_max_length || 512,
+          refs: raw || "",
+        }),
+      });
+      const txt = await res.text();
+      let d;
+      try { d = JSON.parse(txt); }
+      catch (_) { throw new Error("HTTP " + res.status + "：" + txt.slice(0, 120)); }
+      if (!res.ok || d.error) throw new Error(d.error || ("HTTP " + res.status));
+      if (!d.text || d.text === t) {
+        rwStatus.textContent = "模型没有产出改动，保持原样";
+        return;
+      }
+      st.prompt = d.text;
+      edPos.setText(d.text);
+      commit();
+      emitDeskChange({ reason: "image-studio" });
+      rwStatus.textContent = "已改写 " + d.text.length + " 字并写回提示词框";
+    } catch (err) {
+      rwStatus.textContent = "改写失败：" + ((err && err.message) || err);
+    } finally {
+      rwBtn.disabled = false;
+      rwBtn.textContent = old;
+    }
   };
   pWrap.append(rwWrap);
 
@@ -834,11 +1001,13 @@ function buildUI(node) {
   const insertToken = (t) => { if (!lastEd.readonly()) lastEd.insert(t); };
 
   function paintRead() {
-    const moss = (familyOf() === FAM_MOSS);
+    const fam = familyOf();
+    const moss = (fam === FAM_MOSS);
+    const h3 = (fam === FAM_H3IMAGE);
     headBadge.replaceChildren();
     /* 徽标第一段是模型名——用户一眼能看出这个节点当前在服务哪个模型，
        不用去翻 CLIP 加载节点。 */
-    headBadge.append(el("span", null, moss ? "MOSS-Image" : "Qwen-Image 2.1"),
+    headBadge.append(el("span", null, moss ? "MOSS-Image" : h3 ? "MiniMax H3 Image" : "Qwen-Image 2.1"),
       el("span", null, " · "));
     if (st.canvas_from_ref && !moss) {
       headBadge.append(el("b", null, "输出画面 跟随图片1"));
@@ -875,17 +1044,19 @@ function buildUI(node) {
     st.prompt = typeof d.prompt === "string" ? d.prompt : "";
     st.negative_prompt = typeof d.negative_prompt === "string" ? d.negative_prompt : "";
     /* 旧存档里的 images（面板槽位时代）直接丢弃：参考图现在只认媒体架 */
-    /* 画布缺省/非法 → 官方默认 1024²；单边合法单边不合法不取半张 */
+    /* 画布缺省/非法 → 官方默认（H3 2048²，其余 1024²）；用 align32 不夹上限
+       ——H3 存档的 6000 不被截成 4096（load 时 CLIP 可能还没接）。 */
     const cv = (d.canvas && typeof d.canvas === "object") ? d.canvas : {};
     const cw = Math.round(Number(cv.w) || 0);
     const ch = Math.round(Number(cv.h) || 0);
+    const defSide = familyOf() === FAM_H3IMAGE ? 2048 : 1024;
     st.canvas = (cw >= STEP && ch >= STEP)
-      ? { w: snap(cw), h: snap(ch) }
-      : { w: 1024, h: 1024 };
+      ? { w: align32(cw), h: align32(ch) }
+      : { w: defSide, h: defSide };
     st.canvas_from_ref = !!d.canvas_from_ref;
-    /* 跟随长边：缺省/非法 → 1024（后端同口径夹进 [32,4096]，0 = 原尺寸） */
+    /* 跟随长边：缺省/非法 → 1024；align32 不夹上限（H3 可到 8192） */
     const lg = Math.round(Number(d.ref_long));
-    st.ref_long = Number.isFinite(lg) && lg >= 0 ? (lg > 0 ? snap(lg) : 0) : REF_LONG_DEFAULT;
+    st.ref_long = Number.isFinite(lg) && lg >= 0 ? (lg > 0 ? align32(lg) : 0) : REF_LONG_DEFAULT;
     /* 参考尺寸：缺省 / 非法 → 与后端 REF_CAP_DEFAULT 同值；0 = 原尺寸。
        旧存档里这项叫 resolution（当时按面积锚定），数值当最长边上限用依然合理。 */
     const capRaw = d.ref_cap != null ? Number(d.ref_cap)
@@ -893,9 +1064,10 @@ function buildUI(node) {
     st.ref_cap = Number.isFinite(capRaw) ? refCapOf(capRaw) : REF_CAP_DEFAULT;
     /* 别名开关：缺省开——旧存档没有这一项，保持它们原本的行为 */
     st.alias = d.alias !== false;
-    /* 改写：旧存档没有这三项，缺省关（保持旧工作流行为不变） */
+    /* 改写：旧存档没有这些项，缺省关（保持旧工作流行为不变） */
     st.rewrite = d.rewrite === true;
     st.rewrite_system = typeof d.rewrite_system === "string" ? d.rewrite_system : "";
+    st.rewrite_model = typeof d.rewrite_model === "string" ? d.rewrite_model : "";
     const rwLen = Math.round(Number(d.rewrite_max_length));
     st.rewrite_max_length = Number.isFinite(rwLen) && rwLen >= 64
       ? Math.min(4096, rwLen) : 512;

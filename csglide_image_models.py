@@ -16,9 +16,11 @@ import re
 # ---- 模型家族 ----------------------------------------------------------
 FAMILY_MOSS = "moss"        # MOSS-Image：qwen3.5_9b 编码器（带视觉塔；DiT 无参考潜空间）
 FAMILY_QWEN21 = "qwen21"    # Qwen-Image 2.1：qwen3vl_8b 编码器，有视觉塔
+FAMILY_H3IMAGE = "h3image"  # MiniMax H3 Image：qwen3vl_32b 编码器（截断50层），文生图+图片编辑
 
-# 潜空间通道数：MOSS 走 Flux2 格式（128），Qwen-Image 2.1 走 QwenImage21（64）。
-LATENT_CHANNELS = {FAMILY_MOSS: 128, FAMILY_QWEN21: 64}
+# 潜空间通道数：MOSS 走 Flux2 格式（128），Qwen-Image 2.1 走 QwenImage21（64），
+# H3 Image 走视频潜空间静态帧（24，5维含 T=1）。
+LATENT_CHANNELS = {FAMILY_MOSS: 128, FAMILY_QWEN21: 64, FAMILY_H3IMAGE: 24}
 
 # 提示词改写的默认系统提示词：MOSS-Image 是中文描述模型，喂成段的描述比
 # 喂关键词串更稳。改写后仍走同一个编码器，不额外占显存。
@@ -36,6 +38,21 @@ MOSS_REWRITE_SYSTEM = (
 
 REWRITE_MAX_LENGTH_DEFAULT = 512
 
+# H3 Image 的提示词改写默认系统提示词：把简短编辑指令扩写成完整的英文画面描述。
+# 主编码器 qwen3vl_32b 截断到 50 层，不能出字——改写必须外接独立模型（同文案台机制）。
+H3IMAGE_REWRITE_SYSTEM = (
+    "You are a prompt expander for MiniMax H3 Image. "
+    "Rewrite the user's short editing instruction into a rich, vivid English description "
+    "of the intended finished target image.\n"
+    "Rules:\n"
+    "- Output only the rewritten description, no titles, no explanations, no JSON.\n"
+    "- Preserve every subject, action, scene, and style the user specified.\n"
+    "- Refer to reference images as <Picture 1>, <Picture 2>, etc.\n"
+    "- Add concrete visual details: framing, lighting, materials, colors, atmosphere.\n"
+    "- Describe only what is visible in the image; no sounds, smells, or backstory.\n"
+    "- English, 1-3 paragraphs, 150-400 words."
+)
+
 
 def detect_family(clip):
     """按 tokenizer 类型判别模型家族；认不出来就报错，不猜。
@@ -48,9 +65,12 @@ def detect_family(clip):
         return FAMILY_MOSS
     if tok_name == "QwenImage21Tokenizer":
         return FAMILY_QWEN21
+    if tok_name == "MiniMaxH3Tokenizer":
+        return FAMILY_H3IMAGE
     raise RuntimeError(
-        "图像编辑台只支持两种编码器：MOSS-Image（qwen3.5_9b，CLIPLoader 的 type 选 "
-        "moss_image）与 Qwen-Image 2.1（qwen3vl_8b，type 选 qwen_image）。"
+        "图像编辑台只支持三种编码器：MOSS-Image（qwen3.5_9b，CLIPLoader 的 type 选 "
+        "moss_image）、Qwen-Image 2.1（qwen3vl_8b，type 选 qwen_image）与 "
+        "MiniMax H3 Image（qwen3vl_32b，type 选 minimax）。"
         "当前接入的是 %s——请检查 CLIP 加载节点的 type。" % (tok_name or "未知类型"))
 
 
