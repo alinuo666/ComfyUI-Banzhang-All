@@ -415,9 +415,9 @@ function buildUI(node) {
   let rackSeen = null, extSeen = null, famSeen = null;
   function pollOnce() {
     if (node.flags?.collapsed || document.hidden) return;
-    rackImages();
-    if (rackCache.raw !== rackSeen) {
-      rackSeen = rackCache.raw;
+    const rackRaw = rackSlotsOf(node).raw;
+    if (rackRaw !== rackSeen) {
+      rackSeen = rackRaw;
       refsChanged();
     }
     const up = promptNodeOf(node);
