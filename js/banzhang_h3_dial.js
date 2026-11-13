@@ -298,11 +298,11 @@ function buildRow(node, row) {
     if (isPro(node)) {
         // 一进专业版就给默认曲线，否则用户不点预设时 row.curve 为空、后端仍按中性透传。
         if (!row.curve?.points) {
-            row.curve = { points: DEFAULT_POINTS(), preset: "匀速", k: 2, audio: "protect" };
+            row.curve = { points: DEFAULT_POINTS(), preset: "匀速", k: 1, audio: "protect" };
             syncConfig(node);
         }
         const ed = createCurveEditor(row.curve.points, (pts, preset) => {
-            row.curve = { points: pts, preset: preset, k: 2, audio: "protect" };
+            row.curve = { points: pts, preset: preset, k: 1, audio: "protect" };
             syncConfig(node);
             refresh(node);
         });

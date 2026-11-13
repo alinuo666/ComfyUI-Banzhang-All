@@ -103,7 +103,7 @@ def _official_rows(rows, get_vec):
             "meta": {"model_family": "MiniMax H3", "name": st["name"]},
         }
         dense = _sample_curve(pts)
-        k = max(1, min(6, int(cv.get("k", 2))))
+        k = max(1, min(6, int(cv.get("k", 1))))
         for label, sign, cap, pick in (
             ("正向", 1.0, float(st["pos_cap"]), lambda c: max(0.0, c)),
             ("负向", -1.0, float(st["neg_cap"]), lambda c: max(0.0, -c)),
