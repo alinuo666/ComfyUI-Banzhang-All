@@ -42,9 +42,9 @@ except Exception:      # pragma: no cover
 # 本地统一状态库（20261012 方案 A）：新工程的 chain/clip 权威在 SQLite，
 # 老工程（目录里已有 chain.json）继续走 JSON。store 模块自带 /cglide/store/* 路由。
 try:
-    from . import csglide_store as store
+    from .core import csglide_store as store
 except ImportError:      # pragma: no cover - 独立脚本直跑
-    import csglide_store as store
+    from .core import csglide_store as store
 
 # 引导头默认承接帧数（出厂默认）。H3 续写窗口合法格点是 17k+5：5/22/39/56…，
 # 注册段时前端按 state.cont.frames 显式传值；这里是「没显式传」时的兜底，默认 39。
@@ -630,6 +630,32 @@ def clip_cont(name, cid, take=1, stage=None):
     return os.path.join(chain_dir(name), fn)
 
 
+def clip_cont_resolve(name, cid, stage=None):
+    """按阶段认这一段**实际写盘**的承接档；找不到返回 None。
+
+    为什么不能只拼 clip_cont(current_take, stage)：一采(s1)与二采(s2)曾是两次
+    独立 Queue，旧写法各开一个 take，s1 落 take1、s2 落 take2；cont_saved 与
+    续接查找都按 current_take 拼路径，指向的是从没写过的文件。这里改成认档案
+    take_params 里真正记了 stages[stage] 且文件在盘上的那一版，从当前 take 往回
+    找最近的一版，都没有再退回按段号拼的路径。只读这一段自己的档案，绝不按
+    目录 mtime 猜档（那会接到别的段 / 别的片）。
+    """
+    if stage in (None, ""):
+        stage = current_stage(name)
+    meta = load_clip(name, cid) or {}
+    tp = meta.get("take_params") or {}
+    cur = int(meta.get("current_take") or 1)
+    takes = sorted({int(t) for t in tp if str(t).isdigit()}, reverse=True)
+    for t in takes:
+        if t > cur:
+            continue
+        p = str(((tp.get(str(t)) or {}).get("stages") or {}).get(stage) or "")
+        if p and os.path.isfile(p):
+            return p
+    exact = clip_cont(name, cid, cur, stage)
+    return exact if exact and os.path.isfile(exact) else None
+
+
 # ---------------- 中央生成回执：按本次 prompt 拓扑认片 ----------------
 
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
@@ -1174,10 +1200,10 @@ def set_pending(name, cid, kind):
 # 注意 snap_frames 是「四舍五入到最近格点」，与 ledger.align_frame_count 的
 # 「向上吸附」语义不同 —— 算法保持原样，这里只统一常量值。
 try:
-    from . import csglide_ledger as _ledger
+    from .core import csglide_ledger as _ledger
 except ImportError:
     try:
-        import csglide_ledger as _ledger
+        from .core import csglide_ledger as _ledger
     except ImportError:
         _ledger = None
 FRAME_GRID = getattr(_ledger, "FRAME_GRID", 17)
@@ -1248,7 +1274,7 @@ def shrink_tail_to_audio(name, files=None):
     """
     out = {"成功": True, "已缩短": 0, "帧数": [], "段序": [], "明细": []}
     try:
-        from . import banzhang_audio_cut as _audio
+        from .core import banzhang_audio_cut as _audio
         files = [str(x).strip() for x in (files or []) if x]
         if not files:
             return out
@@ -1332,8 +1358,8 @@ def _resync_audio_drivers(name, files=None):
     时间轴拖动、段菜单、冲突消解，最后都走这一处。
     """
     try:
-        from . import csglide_store as _st
-        from . import banzhang_audio_cut as _audio
+        from .core import csglide_store as _st
+        from .core import banzhang_audio_cut as _audio
         d = chain_dir(name)
         if not _st.has_db(d):
             return {}
@@ -2887,9 +2913,9 @@ def export_film_plan(name, at=None):
     gate = []
     if os.environ.get("BZ_EXPORT_GATE", "1").strip() != "0":
         try:
-            from .csglide_export_gate import export_gate
+            from .core.csglide_export_gate import export_gate
         except ImportError:
-            from csglide_export_gate import export_gate
+            from .core.csglide_export_gate import export_gate
         gate = export_gate(fs, {"at_index": cut, "short": short,
                                 "trim_notes": trim_notes})
     if gate:
@@ -3836,7 +3862,7 @@ def sync_check(name, shots):
     csglide_cast 各一份，比对前先对齐。
     """
     try:
-        from . import csglide_cast as _cast
+        from .nodes import csglide_cast as _cast
         _align = getattr(_cast, "align_frame_count", None)
     except Exception:
         _align = None
@@ -4863,7 +4889,7 @@ try:
         if not name:
             return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
         try:
-            from . import csglide_store as _st
+            from .core import csglide_store as _st
             d = _st.chain_dir(name)
             conn = _st._connect(d, create=False) if _st.has_db(d) else None
             tracks = (_st._meta_get(conn, "bzsa.tracks", []) or []) if conn else []
@@ -4952,7 +4978,7 @@ try:
         except Exception:
             return _json({"error": "请求体不是 JSON"}, 400)
         try:
-            from . import csglide_segment_runner as sr
+            from .core import csglide_segment_runner as sr
             runner = sr.create_runner(body.get("name") or "",
                                       body.get("clips") or [],
                                       body.get("run_id") or None)
@@ -4966,7 +4992,7 @@ try:
             body = await request.json()
         except Exception:
             return _json({"error": "请求体不是 JSON"}, 400)
-        from . import csglide_segment_runner as sr
+        from .core import csglide_segment_runner as sr
         runner = sr.get_runner(body.get("run_id"))
         if runner is None:
             return _json({"error": "没有这个 run_id"}, 404)
@@ -4982,7 +5008,7 @@ try:
             body = await request.json()
         except Exception:
             return _json({"error": "请求体不是 JSON"}, 400)
-        from . import csglide_segment_runner as sr
+        from .core import csglide_segment_runner as sr
         runner = sr.get_runner(body.get("run_id"))
         if runner is None:
             return _json({"error": "没有这个 run_id"}, 404)
@@ -4995,7 +5021,7 @@ try:
 
     @PromptServer.instance.routes.get("/cglide/chain/run_segments/status")
     async def _route_run_status(request):
-        from . import csglide_segment_runner as sr
+        from .core import csglide_segment_runner as sr
         runner = sr.get_runner(request.query.get("run_id") or "")
         if runner is None:
             return _json({"error": "没有这个 run_id"}, 404)
@@ -5007,7 +5033,7 @@ try:
             body = await request.json()
         except Exception:
             return _json({"error": "请求体不是 JSON"}, 400)
-        from . import csglide_segment_runner as sr
+        from .core import csglide_segment_runner as sr
         return _json({"dropped": sr.drop_runner(body.get("run_id"))})
 
     @PromptServer.instance.routes.post("/cglide/store/segment_binding/verify")
@@ -5029,12 +5055,12 @@ try:
             return {}
 
         try:
-            from . import csglide_single_source as ss
+            from .core import csglide_single_source as ss
             name = body.get("name") or ""
             clip = body.get("clip") or ""
             binding = None
             try:
-                from . import csglide_store as st
+                from .core import csglide_store as st
                 raw = st.load_segment_binding(chain_dir(name), clip)
                 if raw is not None and not isinstance(raw, dict):
                     raw = dict(raw)

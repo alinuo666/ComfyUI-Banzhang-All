@@ -47,26 +47,32 @@ export function installSeg(ui) {
 
   const rackSaveTimers = {};
   let hydrateQuietUntil = 0;
+  /* 返回值 = 这一次有没有真的排上落库。四道闸门任一拦下都是 false，调用方
+     （参照图替换的跨段还原）靠它区分"已落库"与"静默没落"——否则用户看到
+     「已还原」，刷新后中央库又把旧架面灌回来。原有调用方一律忽略返回值。 */
   function scheduleRackSave(cid) {
-    if (!cid || Date.now() < hydrateQuietUntil) return;
+    if (!cid || Date.now() < hydrateQuietUntil) return false;
     const p = castProject(ui.node);
     const name = (p && p.name) || "";
-    if (!name) return;
-    if (!isRealCid(cid)) return;      // 段身份只有 clip_，uid / 临时键一律不落库
-    if (!isLiveCid(cid)) return;      // 不是档案里的段，别写进去
+    if (!name) return false;
+    if (!isRealCid(cid)) return false;      // 段身份只有 clip_，uid / 临时键一律不落库
+    if (!isLiveCid(cid)) return false;      // 不是档案里的段，别写进去
     clearTimeout(rackSaveTimers[cid]);
-    /* 写穿透统一经 projectStore 防抖调度：防抖结束取最新段记忆落库，提交前
-       flushWrites 会立即触发并等它，杜绝"摆图后立刻提交、后端还是旧架况"。 */
+    /* 调度时即锁快照（20261113 根因修复）：落库数据此刻深拷贝定死，回调不再
+       到点读 segs。旧实现到点才读 ui.st.segs[cid]，而新建/切换工程会同步清空
+       segs —— 在途写于是读到空，saveRack 把旧工程该段素材行整段删光（摆完素材
+       700ms 内点新建即中招，切回原工程素材全丢）。锁快照后任何清空都污染不了
+       在途写；合并语义不变（scheduleSave 每次覆盖 fire，最后一次编辑胜出）。
+       写穿透仍统一经 projectStore 防抖，提交前 flushWrites 立即触发并等它。 */
+    const snap = cloneRack(ui.st.segs[cid]);
     projectStore.scheduleSave(name, "rack:" + cid, () => {
-      /* 以段记忆为准：切段时 segs[cid] 已收口；正在编辑的段 segs[cur] 也被
-         commit 实时更新过。
-         空快照**同样要落库**（20261019）：原先「没有素材的段不占库行」让
+      /* 空快照**同样要落库**（20261019）：原先「没有素材的段不占库行」让
          清空 / 删光素材之后库里仍留着旧记录，刷新时 hydrateRacks 按库把素材
          整批灌回来 —— 表现就是「点了清空，刷新后素材又长回来」。
          灌库侧只认有素材的段（rackHasFile），空记录灌不进来，写空是安全的。 */
-      const snap = ui.st.segs[cid];
-      return saveRack(name, cid, snap || emptyRack());
+      return saveRack(name, cid, snap);
     }, 700);
+    return true;
   }
 
   function emptyRack() {

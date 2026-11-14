@@ -8,10 +8,29 @@ import threading
 from collections import deque
 from fractions import Fraction
 
-import av
 import numpy as np
 import torch
-from av.video.reformatter import Interpolation
+
+# PyAV 是可选依赖（requirements.txt 里 av>=12），ComfyUI 不会自动安装。
+# 导入期软失败保证节点仍注册；真要读写视频时再给中文安装提示。
+try:
+    import av
+    from av.video.reformatter import Interpolation
+except Exception as _PyAV异常:  # noqa: BLE001 - 允许未装 PyAV 的环境加载节点
+    av, Interpolation = None, None
+    _PyAV原因 = str(_PyAV异常)
+else:
+    _PyAV原因 = None
+
+
+def _需要PyAV():
+    """只在真正要解码/编码时调用，不影响节点注册与权重扫描。"""
+    if av is None:
+        raise RuntimeError(
+            "视频读写需要 PyAV（av>=12）。请用 ComfyUI 所在环境的 python 执行"
+            "「pip install av>=12.0.0」后重启 ComfyUI"
+            f"（导入错误：{_PyAV原因}）。"
+        )
 
 import comfy.utils
 import folder_paths
@@ -82,6 +101,7 @@ class VideoReader:
     """
 
     def __init__(self, video, audio_container):
+        _需要PyAV()
         self.crop = _video_crop(video)
         self._crop_rect = None
         self._crop_resolved = False
@@ -272,6 +292,7 @@ class VideoWriter:
         self, path, width, height, fps, codec, crf, preset,
         audio_layout=None, audio_rate=0, audio_template=None, queue_depth=2,
     ):
+        _需要PyAV()
         encoder, container, crf_max = CODECS[codec]
         self.path = path
         self.width = width + width % 2

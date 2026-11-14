@@ -13,7 +13,7 @@ from server import PromptServer
 
 def _snapshot():
     """清理前后读数。任一来源失败只归零，不能影响清理本身。"""
-    from .banzhang_sysinfo import get_gpu_info, get_ram_info
+    from .core.banzhang_sysinfo import get_gpu_info, get_ram_info
     try:
         vram_total, vram_used, _src = get_gpu_info()
     except Exception:
@@ -53,7 +53,7 @@ def _clean():
     惰性导入：cleaner 是本包最重的模块之一（aimdo / VBAR），只在用户第一次
     点按钮时才付这份 import 代价。
     """
-    from .banzhang_vram_cleaner import 执行深度清理
+    from .nodes.banzhang_vram_cleaner import 执行深度清理
 
     执行深度清理(卸载模型=True, 清理缓存=True, 裁工作集_=True)
 

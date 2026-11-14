@@ -286,6 +286,10 @@ function buildUI(node) {
        外部改完 ui.st 后必须 先 renderImages 再 commit，否则栏位变了、
        面板上那一格还是旧图（与 loadSeg/copySeg 当年"漏挂变静默失败"同类）。 */
     renderImages: ui.renderImages,
+    /* saveSegRack 同样必须对外：参照图替换的跨段还原靠它把**记录那一段**落库，
+       而 commit 只落当前段。漏挂 = 恒 undefined、被可选链静默吞掉 → 还原不落库，
+       刷新后中央库把旧架面灌回来（与 loadSeg/copySeg 当年"漏挂即静默失败"同一类）。 */
+    saveSegRack: ui.saveSegRack,
     minH: ui.minH,
     /* 槽位纠错（20261024）：控制台的 bzVacate() / bzVacateUndo() / bzVacateAuto()
        走这三个 —— 漏挂就是恒 undefined、控制台命令静默失败（与 loadSeg/copySeg

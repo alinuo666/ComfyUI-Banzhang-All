@@ -39,7 +39,7 @@ except Exception:      # pragma: no cover - PyAV ships with ComfyUI
     av = None
 
 try:
-    from . import csglide_join as _join_mod
+    from .nodes import csglide_join as _join_mod
 except Exception:      # pragma: no cover - Join 不可用时面板没有数据源
     _join_mod = None
 

@@ -774,10 +774,7 @@ function buildUI(node) {
   function paintHint() {
     const h3 = (familyOf() === FAM_H3IMAGE);
     if (h3) {
-      hint.textContent = "H3 Image 只送提示词里 @图片N 引用的图（未引用的跳过，省显存）；"
-        + "引用后转写成 <Picture N>，序号按引用顺序重编。点亮的标签 = 提示词里提到了它。"
-        + "别名（媒体架槽位里起的名字）可直接当引用写；\\别名 表示不展开；"
-        + "同一张图既写名字又写 @图片1 时，把「别名」关掉即可避免重复引用。";
+      hint.textContent = "";
     } else {
       hint.textContent = "参考图全部送出，不必在提示词里点名；@图片N 只是用来在文字里区分它们（会转写成 <imageN>）。"
         + "点亮的标签 = 提示词里提到了它。别名（媒体架槽位里起的名字）可直接当引用写；"

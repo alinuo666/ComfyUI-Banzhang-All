@@ -679,6 +679,29 @@ function buildPanel(node) {
     if (fixed !== null) writeDeskSeg(segKey, fixed);
   }
 
+  /* 补行 / 排版修正只在用户显式动作时做（点「开场构图」标签、点替换按钮）。
+     原来挂在 paintTarget 里，而重绘会因**切段**触发 —— 用户只是切个段，就被
+     自动往新段插一行开场构图声明。重绘路径只负责显示 noLine 警告，不写文案。
+     去重键照旧：同一段同一栏只补一次，补不上就停。 */
+  function repairOpenLine(kind) {
+    if (kind !== "open") return;
+    const t = targetState("open");
+    if (t.err || t.need || t.idle || !t.core) return;
+    if (t.core.noLine) {
+      const k = `${t.core.segKey}:${t.core.index}`;
+      if (lineFixKey !== k) {
+        lineFixKey = k;
+        ensureOpenLine(t.core.segKey, t.core.index);
+      }
+    } else {
+      const k = `p:${t.core.segKey}:${t.core.index}`;
+      if (lineFixKey !== k) {
+        lineFixKey = k;
+        polishOpenLine(t.core.segKey, t.core.index);
+      }
+    }
+  }
+
   /* 媒体架末尾追加一空栏（与手动「＋ 添加」同一写法 push({})），把栏号写进
      文案。栏号 = 追加后的长度，永不写死 —— 写死必然跟别的参照图撞车。 */
   function createOpenSlot() {
@@ -791,25 +814,6 @@ function buildPanel(node) {
       el.tgtName.textContent = "—";
       el.badge.style.display = "none";
       return false;
-    }
-
-    /* 栏在、文案行没了（历史遗留）：补一次。用 段+栏 做去重键，
-       同一处只补一次 —— 补不上就停，不跟着重绘反复改文案。 */
-    if (t.core.noLine) {
-      const k = `${t.core.segKey}:${t.core.index}`;
-      if (lineFixKey !== k) {
-        lineFixKey = k;
-        ensureOpenLine(t.core.segKey, t.core.index);
-        const t2 = targetState(st.cur);
-        if (!t2.err && !t2.need) t = t2;
-      }
-    } else {
-      /* 行在，但旧版写进去的没有「- 」前缀 / 句号：改正一次 */
-      const k = `p:${t.core.segKey}:${t.core.index}`;
-      if (lineFixKey !== k) {
-        lineFixKey = k;
-        polishOpenLine(t.core.segKey, t.core.index);
-      }
     }
 
     el.tgt.textContent = `@图片${t.core.index}${t.core.alias ? " " + t.core.alias : ""}`;
@@ -940,8 +944,9 @@ function buildPanel(node) {
          否则「栏在、行没了」会被去重键挡住，一直不补。 */
       lineFixKey = "";
       writeState(node, st);
-      if (next === st.cur) { tgtShown = ""; paint(); return; }
+      if (next === st.cur) { tgtShown = ""; repairOpenLine(next); paint(); return; }
     }
+    repairOpenLine(next);
     if (next === st.cur) return;
     openFailed = false;          // 重新点标签 = 再给一次机会
     tg().frame = st.frame;
@@ -1286,6 +1291,7 @@ function buildPanel(node) {
     const g = tg();
     if (g.replaced) { withBusy(async () => restore()); return; }
     withBusy(async () => {
+      repairOpenLine(st.cur);
       const t = targetState(st.cur);
       if (t.err) { setMsg(t.err, "err"); return; }
       /* 已撤销：idle 分支没有 index，放过去就是「第 undefined 栏」那种报错。
@@ -1378,26 +1384,27 @@ function buildPanel(node) {
     const orig = hadOrig ? g.origFile : "";
 
     const same = !segKey || !r.cur || segKey === r.cur;
-    if (same) {
-      /* 同段：只改活槽位，段快照交给 commit 自己同步 */
-      if (slot) {
-        slot.file = orig;
-        if (slot.wired) slot.manualFile = orig;   // 拆线后别再冒出换之前那张图
-      }
-    } else {
-      /* 跨段：改那一段的记忆，不碰当前架面（否则眼前这段会跟着变色） */
-      const tgt = segSlot || slot;
-      if (tgt) {
-        tgt.file = orig;
-        if (tgt.wired) tgt.manualFile = orig;
-      }
+    /* 跨段：改那一段的记忆，不碰当前架面（否则眼前这段会跟着变色） */
+    const tgt = segSlot || slot;
+    /* 必须真写到一个对象上。原来同段分支里 slot 缺失就静默跳过，后面照样
+       报「已还原」—— 全片共用模式下当前架面比记录段短时正是这样。 */
+    const dst = same ? slot : tgt;
+    if (!dst) {
+      setMsg(`第 ${g.index} 栏在「${g.segName || segKey || "当前段"}」里找不到，还原不了`, "err");
+      return;
     }
+    dst.file = orig;
+    if (dst.wired) dst.manualFile = orig;   // 拆线后别再冒出换之前那张图
 
     commitRack(r.rw, r.data);
     /* 跨段还原改的是「记录那一段」的架面记忆，而 commit 的落库只认当前段
        （媒体架把 ui.commit 包了一层 → scheduleRackSave(ui.st.cur)）。不补这一句，
-       内存里对、工程库里还是旧的：刷新页面又把尾帧图拉回来。 */
-    if (!same) { try { r.rw.g?.saveSegRack?.(segKey); } catch (_) { /* 落库失败不挡还原 */ } }
+       内存里对、工程库里还是旧的：刷新页面又把尾帧图拉回来。
+       返回值 = 有没有真排上落库；被闸门拦下必须说出来，不能假报成功。
+       全片共用模式（cur 为空）由 commit 自己落所有段，这里不重复判。 */
+    let saved = true;
+    if (!same) { try { saved = r.rw.g?.saveSegRack?.(segKey) === true; } catch (_) { saved = false; } }
+    else if (r.cur) { try { saved = r.rw.g?.saveSegRack?.(r.cur) === true; } catch (_) { saved = false; } }
 
     /* 开场构图这一路的文案行是本节点自己插的：那一栏还原成空之后，这行就成了
        指向空槽的假声明（提示词说有参考图，模型实际拿到空）——必须一起撤掉。
@@ -1445,8 +1452,15 @@ function buildPanel(node) {
     paintTarget();
     const tail = same ? "" : "（不在这一段，切回去才看得见）";
     const gone = revokedLine ? " · 开场构图行已一并撤掉" : "";
-    flashNote(`已还原${where}${tail}${gone}`);
-    console.log("[H3 参照图替换] 已还原%s%s", where, revokedLine ? "（含文案行）" : "");
+    if (saved) {
+      flashNote(`已还原${where}${tail}${gone}`);
+    } else {
+      /* 落库被闸门拦下（灌库静默期 / 拿不到片名 / 段身份不合规）：内存里对了，
+         中央库还是尾帧，切段对账或刷新会把它灌回来 —— 必须说清楚。 */
+      setMsg(`已还原${where}${tail}${gone}，但未落库 —— 刷新或切段后可能变回`, "err");
+    }
+    console.log("[H3 参照图替换] 已还原%s%s 落库=%s", where,
+                revokedLine ? "（含文案行）" : "", saved ? "已排上" : "被拦下");
   }
 
   /* ---------- 尺寸变化 ---------- */

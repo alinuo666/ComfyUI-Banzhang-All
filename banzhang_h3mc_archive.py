@@ -44,12 +44,23 @@ _RUN_TAKES = {}
 _RUN_LOCK = threading.Lock()
 
 
-def _take_for_run(name, cid, run_key, meta):
-    """返回 (take, 是否本次新开版本)；同一 run_key 只分配一次。"""
+def _take_for_run(name, cid, run_key, meta, stage="s1"):
+    """返回 (take, 是否本次新开版本)；同一 run_key 只分配一次。
+
+    二采(s2)复用当前 take，不另开版本：一采/二采是同一版的两份加工档
+    （s1 主档 + s2 放大档），不是两个版本。旧写法每次调用都 current_take+1，
+    一采落 take1、二采落 take2，cont_saved 与续接查找按 current_take 拼路径
+    就指向从没写过的文件 —— 这正是「第 2 段找不到续接档」的根。
+    """
     with _RUN_LOCK:
         key = (str(name), str(cid), str(run_key))
         if key in _RUN_TAKES:
             return _RUN_TAKES[key], False
+        if stage == "s2":
+            # 二采复用一采刚写的那版，不推进、不缓存：它的 take 由当前状态决定，
+            # 缓存反而会在 current_take 推进后返旧值。同 run 里一采先写已缓存，
+            # 上面 cache 命中即与一采同 take，不会分裂。
+            return max(1, int(meta.get("current_take") or 1)), False
         take = max(1, int(meta.get("current_take") or 0) + 1)
         _RUN_TAKES[key] = take
         if len(_RUN_TAKES) > 64:      # 只留最近 32 次，避免长跑内存无界增长
@@ -85,7 +96,7 @@ def _write_av_latent(latent, path):
     不再调用任何存档节点类。Windows 上 safetensors 是内存映射的，
     _write_st 内部先写 .tmp 再 os.replace，避免覆盖正在被读的文件时炸。
     """
-    from .csglide_clip import _streams, _write_st
+    from .nodes.csglide_clip import _streams, _write_st
 
     streams = _streams((latent or {}).get("samples"))
     if not streams:
@@ -107,9 +118,9 @@ def _ticket_identity(prompt, unique_id):
     应急回退仅供真机排障：设环境变量 BZ_TICKET_FALLBACK=1 后重启。
     """
     try:
-        from .csglide_ticket import ticket_from_prompt
+        from .core.csglide_ticket import ticket_from_prompt
     except ImportError:
-        from csglide_ticket import ticket_from_prompt
+        from .core.csglide_ticket import ticket_from_prompt
 
     fallback = os.environ.get("BZ_TICKET_FALLBACK", "").strip() == "1"
     try:
@@ -167,9 +178,9 @@ def mirror_to_central(latent, prompt=None, unique_id=None, stage=None):
     except ImportError:
         import csglide_chain as chain
     try:
-        from .csglide_ticket import CAST_TYPES, decode_stage
+        from .core.csglide_ticket import CAST_TYPES, decode_stage
     except ImportError:
-        from csglide_ticket import CAST_TYPES, decode_stage
+        from .core.csglide_ticket import CAST_TYPES, decode_stage
 
     graph = prompt if isinstance(prompt, dict) else {}
     has_cast = any(isinstance(v, dict) and v.get("class_type") in CAST_TYPES
@@ -193,7 +204,7 @@ def mirror_to_central(latent, prompt=None, unique_id=None, stage=None):
         stage = decode_stage(graph, unique_id)
 
     run_key = ticket.fingerprint if ticket is not None else "%s|%s" % (name, cid)
-    take, fresh = _take_for_run(name, cid, run_key, meta)
+    take, fresh = _take_for_run(name, cid, run_key, meta, stage)
     path = chain.clip_cont(name, cid, take, stage)
     tensors = _write_av_latent(latent, path)
 

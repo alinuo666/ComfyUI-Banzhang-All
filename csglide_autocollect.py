@@ -44,7 +44,7 @@ def _first_time(pid):
 def _target_from_history(entry):
     """从本次执行的历史里取 (工程名, 段 id)；取不到返回 ("", "")。"""
     from .csglide_chain import _history_graph
-    from .csglide_cast import parse_h3_data
+    from .nodes.csglide_cast import parse_h3_data
 
     graph = _history_graph(entry) or {}
     for spec in graph.values():
@@ -64,7 +64,7 @@ def _target_from_history(entry):
             # 不补这一步会被误判成「裸跑」而跳过整轮收片（20261107 真机日志）。
             try:
                 from . import csglide_chain as _c
-                from .csglide_ticket import resolve_clip_id
+                from .core.csglide_ticket import resolve_clip_id
                 cid = resolve_clip_id(name, "", shot, _c.film_summary)
             except Exception:
                 cid = ""

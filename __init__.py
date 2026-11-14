@@ -56,14 +56,14 @@
 # 0. 内置调度器（必须最先执行：后面有模块在 import 阶段就给「调度器」下拉
 #    取了一次列表快照，晚于它注册的名字永远进不了那个节点的下拉）
 try:
-    from . import banzhang_schedulers
+    from .core import banzhang_schedulers
     banzhang_schedulers.install()
 except Exception as e:
     print(f"⚠️ [班长全家桶] 内置调度器加载失败: {e}")
 
 # 1. 音频节点
 try:
-    from . import banzhang_audio_nodes
+    from .nodes import banzhang_audio_nodes
     Audio_Cls = getattr(banzhang_audio_nodes, 'NODE_CLASS_MAPPINGS', {})
     Audio_Names = getattr(banzhang_audio_nodes, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -72,7 +72,7 @@ except Exception as e:
 
 # 2. 潜在空间工具
 try:
-    from . import banzhang_latent_tools
+    from .nodes import banzhang_latent_tools
     Latent_Cls = getattr(banzhang_latent_tools, 'NODE_CLASS_MAPPINGS', {})
     Latent_Names = getattr(banzhang_latent_tools, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -81,7 +81,7 @@ except Exception as e:
 
 # 3. 分辨率与图像处理
 try:
-    from . import banzhang_resolution
+    from .nodes import banzhang_resolution
     Res_Cls = getattr(banzhang_resolution, 'NODE_CLASS_MAPPINGS', {})
     Res_Names = getattr(banzhang_resolution, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -90,7 +90,7 @@ except Exception as e:
 
 # 4. 文本工具
 try:
-    from . import banzhang_text_tools
+    from .nodes import banzhang_text_tools
     Text_Cls = getattr(banzhang_text_tools, 'NODE_CLASS_MAPPINGS', {})
     Text_Names = getattr(banzhang_text_tools, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -99,7 +99,7 @@ except Exception as e:
 
 # 4.5 剧本全流程生图（整合节点）
 try:
-    from . import banzhang_script_pipeline
+    from .nodes import banzhang_script_pipeline
     ScriptAsset_Cls = getattr(banzhang_script_pipeline, 'NODE_CLASS_MAPPINGS', {})
     ScriptAsset_Names = getattr(banzhang_script_pipeline, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -108,7 +108,7 @@ except Exception as e:
 
 # 4.6 剧本全流程·本地生图引擎
 try:
-    from . import banzhang_local_engines
+    from .nodes import banzhang_local_engines
     LocalEngine_Cls = getattr(banzhang_local_engines, 'NODE_CLASS_MAPPINGS', {})
     LocalEngine_Names = getattr(banzhang_local_engines, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -117,7 +117,7 @@ except Exception as e:
 
 # 5. 字幕工具
 try:
-    from . import banzhang_subtitle
+    from .nodes import banzhang_subtitle
     Sub_Cls = getattr(banzhang_subtitle, 'NODE_CLASS_MAPPINGS', {})
     Sub_Names = getattr(banzhang_subtitle, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -126,7 +126,7 @@ except Exception as e:
 
 # 6. 可视化加载器
 try:
-    from . import banzhang_visual_loader
+    from .nodes import banzhang_visual_loader
     Vis_Cls = getattr(banzhang_visual_loader, 'NODE_CLASS_MAPPINGS', {})
     Vis_Names = getattr(banzhang_visual_loader, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -135,7 +135,7 @@ except Exception as e:
 
 # 7. 图像编辑API
 try:
-    from . import banzhang_image_api
+    from .nodes import banzhang_image_api
     API_Cls = getattr(banzhang_image_api, 'NODE_CLASS_MAPPINGS', {})
     API_Names = getattr(banzhang_image_api, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -144,7 +144,7 @@ except Exception as e:
 
 # 8. 显存守护工具函数 (无节点，被显存守卫调用)
 try:
-    from . import banzhang_fast_terminate
+    from .core import banzhang_fast_terminate
     Terminate_Cls, Terminate_Names = {}, {}
 except Exception as e:
     print(f"⚠️ [班长全家桶] 显存守护工具加载失败: {e}")
@@ -152,7 +152,7 @@ except Exception as e:
 
 # 9. 图像处理工具
 try:
-    from . import banzhang_image_splitter
+    from .nodes import banzhang_image_splitter
     Splitter_Cls = getattr(banzhang_image_splitter, 'NODE_CLASS_MAPPINGS', {})
     Splitter_Names = getattr(banzhang_image_splitter, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -171,7 +171,7 @@ except Exception as e:
 
 # 11. 额外工具 (音频保存、音频拼接、两宫格分割、替换首尾帧)
 try:
-    from . import banzhang_extra_tools
+    from .nodes import banzhang_extra_tools
     Extra_Cls = getattr(banzhang_extra_tools, 'NODE_CLASS_MAPPINGS', {})
     Extra_Names = getattr(banzhang_extra_tools, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -180,7 +180,7 @@ except Exception as e:
 
 # 12. 视频工具 (视频合并、音乐播放器、图像对比)
 try:
-    from . import banzhang_video_tools
+    from .nodes import banzhang_video_tools
     Video_Cls = getattr(banzhang_video_tools, 'NODE_CLASS_MAPPINGS', {})
     Video_Names = getattr(banzhang_video_tools, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -189,7 +189,7 @@ except Exception as e:
 
 # 13. 智能视频分镜切割 (场景检测与分割)
 try:
-    from . import banzhang_scene_splitter
+    from .nodes import banzhang_scene_splitter
     Scene_Cls = getattr(banzhang_scene_splitter, 'NODE_CLASS_MAPPINGS', {})
     Scene_Names = getattr(banzhang_scene_splitter, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -198,7 +198,7 @@ except Exception as e:
 
 # 14. 显存管理 (显存预留、清理显存、清理内存 + 后台监控)
 try:
-    from . import banzhang_vram_reserved
+    from .nodes import banzhang_vram_reserved
     Vram_Cls = getattr(banzhang_vram_reserved, 'NODE_CLASS_MAPPINGS', {})
     Vram_Names = getattr(banzhang_vram_reserved, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -207,7 +207,7 @@ except Exception as e:
 
 # 15. 显存管理（全能系统净化 + 显存守卫）
 try:
-    from . import banzhang_vram_cleaner
+    from .nodes import banzhang_vram_cleaner
     CleanVram_Cls = getattr(banzhang_vram_cleaner, 'NODE_CLASS_MAPPINGS', {})
     CleanVram_Names = getattr(banzhang_vram_cleaner, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -223,7 +223,7 @@ except Exception as e:
 
 # 16. 类型转换器 (万能转 String/Int/Float/Bool)
 try:
-    from . import banzhang_type_converter
+    from .nodes import banzhang_type_converter
     Conv_Cls = getattr(banzhang_type_converter, 'NODE_CLASS_MAPPINGS', {})
     Conv_Names = getattr(banzhang_type_converter, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -232,7 +232,7 @@ except Exception as e:
 
 # 16.5 互斥选路器 (N选1直通，通用任意类型，双击改名)
 try:
-    from . import banzhang_route_switch
+    from .nodes import banzhang_route_switch
     RouteSwitch_Cls = getattr(banzhang_route_switch, 'NODE_CLASS_MAPPINGS', {})
     RouteSwitch_Names = getattr(banzhang_route_switch, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -241,7 +241,7 @@ except Exception as e:
 
 # 17. 开发工具 (URL下载、文件上传、执行时间统计)
 try:
-    from . import banzhang_dev_utils
+    from .nodes import banzhang_dev_utils
     DevUtils_Cls = getattr(banzhang_dev_utils, 'NODE_CLASS_MAPPINGS', {})
     DevUtils_Names = getattr(banzhang_dev_utils, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -256,7 +256,7 @@ except Exception as e:
 
 # 20. 显存安全 LoRA 加载器 (实时融合，规避加速 LoRA 预融合导致的 OOM)
 try:
-    from . import banzhang_lora_loader
+    from .nodes import banzhang_lora_loader
     LoraSafe_Cls = getattr(banzhang_lora_loader, 'NODE_CLASS_MAPPINGS', {})
     LoraSafe_Names = getattr(banzhang_lora_loader, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -265,7 +265,7 @@ except Exception as e:
 
 # 21. CGlide 视频工具集 (合并自 ComfyUI-CGlide)
 try:
-    from . import (
+    from .nodes import (
         csglide_seed,
         csglide_cast, csglide_join, csglide_media_rack, csglide_tailref,
     )
@@ -281,7 +281,7 @@ except Exception as e:
 # 21a-4. H3 音频轴切片（口型轨按净长切、配乐轨连续铺）：只有接口、没有节点。
 # 单独成块，不并进上面的 CGlide 元组 —— 那里任一模块出错会连坐五个 CGlide 节点。
 try:
-    from . import banzhang_audio_cut
+    from .core import banzhang_audio_cut
 except Exception as e:
     print(f"⚠️ [班长全家桶] 音频切片加载失败: {e}")
 
@@ -291,7 +291,7 @@ except Exception as e:
 #   · 路由   /banzhang/h3mc/latest_latent_legacy
 #   · 存档   output/h3_context_legacy/（不与现行版共用续拍存档）
 try:
-    from . import csglide_cast_legacy
+    from .nodes import csglide_cast_legacy
     LegacyCast_Cls = getattr(csglide_cast_legacy, 'NODE_CLASS_MAPPINGS', {})
     LegacyCast_Names = getattr(csglide_cast_legacy, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -300,7 +300,7 @@ except Exception as e:
 
 # 21a. H3 段落调取（只读；写档统一由 💾 H3 续拍存档负责）
 try:
-    from . import csglide_clip
+    from .nodes import csglide_clip
     Clip_Cls = getattr(csglide_clip, 'NODE_CLASS_MAPPINGS', {})
     Clip_Names = getattr(csglide_clip, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -309,7 +309,7 @@ except Exception as e:
 
 # 21a-2. H3 文案台（提示词独立节点：媒体架 → 文案台 → 导演台）
 try:
-    from . import csglide_desk
+    from .nodes import csglide_desk
     Desk_Cls = getattr(csglide_desk, 'NODE_CLASS_MAPPINGS', {})
     Desk_Names = getattr(csglide_desk, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -318,7 +318,7 @@ except Exception as e:
 
 # 21a-3. H3 AI 制片中枢（N1 制片中枢 / N2a 资产入库 / N2b 资产架 / N3 DAG编排器 / N4 段尾归位）
 try:
-    from . import banzhang_producer
+    from .nodes import banzhang_producer
     Producer_Cls = getattr(banzhang_producer, 'NODE_CLASS_MAPPINGS', {})
     Producer_Names = getattr(banzhang_producer, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -327,14 +327,14 @@ except Exception as e:
 
 # CGlide 服务端路由 (/cglide/recent_outputs、/cglide/adopt_output、/cglide/probe)，仅注册路由不注册节点
 try:
-    from . import csglide_adopt  # noqa: F401
+    from .core import csglide_adopt  # noqa: F401
 except Exception as e:
     print(f"⚠️ [班长全家桶] CGlide 路由加载失败: {e}")
 
 # 媒体架缩略图路由 (/cglide/thumb)，仅注册路由不注册节点。
 # 自带 /view?preview= 只压编码不缩尺寸，几十张原图能把浏览器内存吃满（20261020）。
 try:
-    from . import csglide_thumb  # noqa: F401
+    from .core import csglide_thumb  # noqa: F401
 except Exception as e:
     print(f"⚠️ [班长全家桶] 缩略图路由加载失败: {e}")
 
@@ -342,7 +342,7 @@ except Exception as e:
 # 落盘前按内容哈希判同名冲突，同名不同内容先问用户「替换/新增」，
 # 不再盲目覆盖（微信同名图互相顶掉丢图的根因修复，20261112）。
 try:
-    from . import csglide_asset_upload  # noqa: F401
+    from .core import csglide_asset_upload  # noqa: F401
 except Exception as e:
     print(f"⚠️ [班长全家桶] 素材上传路由加载失败: {e}")
 
@@ -354,7 +354,7 @@ except Exception as e:
 
 # 21b. H3 钉帧遮罩（长片时间轴地基：改一段不动后面的数学保证）
 try:
-    from . import banzhang_h3_pin
+    from .nodes import banzhang_h3_pin
     Pin_Cls = getattr(banzhang_h3_pin, 'NODE_CLASS_MAPPINGS', {})
     Pin_Names = getattr(banzhang_h3_pin, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -363,7 +363,7 @@ except Exception as e:
 
 # 21c. H3 漂移控制（段交界无缝：随去噪 sigma 动态重算前缀 mask，根治硬跳）
 try:
-    from . import banzhang_h3_drift
+    from .nodes import banzhang_h3_drift
     Drift_Cls = getattr(banzhang_h3_drift, 'NODE_CLASS_MAPPINGS', {})
     Drift_Names = getattr(banzhang_h3_drift, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -385,7 +385,7 @@ except Exception as e:
 
 # 22. H3 SLA 注意力加速（内部走官方 comfy-kitchen sol-attn，合并自 ComfyUI-H3-SLA-Attention）
 try:
-    from . import banzhang_sla_attention
+    from .nodes import banzhang_sla_attention
     Sla_Cls = getattr(banzhang_sla_attention, 'NODE_CLASS_MAPPINGS', {})
     Sla_Names = getattr(banzhang_sla_attention, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -396,7 +396,7 @@ except Exception as e:
 
 # 25. 注释虚拟节点 (后端桩：仅用于节点库归类，渲染由 js/banzhang_note.js 接管)
 try:
-    from . import banzhang_note
+    from .nodes import banzhang_note
     Note_Cls = getattr(banzhang_note, 'NODE_CLASS_MAPPINGS', {})
     Note_Names = getattr(banzhang_note, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -408,7 +408,7 @@ Topaz_Cls, Topaz_Names = {}, {}
 
 # 27. MiniMax H3 预览覆盖 (采样逐帧实时预览, 合并自 ComfyUI-MiniMaxH3-PreviewOverride)
 try:
-    from . import banzhang_mmh3_preview
+    from .nodes import banzhang_mmh3_preview
     H3Prev_Cls = getattr(banzhang_mmh3_preview, 'NODE_CLASS_MAPPINGS', {})
     H3Prev_Names = getattr(banzhang_mmh3_preview, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -417,7 +417,7 @@ except Exception as e:
 
 # 28. SelfLift 渐进提升（MODEL → MODEL 补丁节点，配合原生采样器；依赖 selflift/ 子包）
 try:
-    from . import banzhang_selflift
+    from .nodes import banzhang_selflift
     SelfLift_Cls = getattr(banzhang_selflift, 'NODE_CLASS_MAPPINGS', {})
     SelfLift_Names = getattr(banzhang_selflift, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -426,7 +426,7 @@ except Exception as e:
 
 # 29. H3 Latent 放大 (2D/3D 合一) —— 单节点 backend 下拉切换 2D 主干(仅空间) / 3D 主干(时空联合)，合并自 Comfyui_Minimax_h3_latent_Upscaler
 try:
-    from . import banzhang_h3_latent_upscaler_3d
+    from .nodes import banzhang_h3_latent_upscaler_3d
     H3Latent_Cls = getattr(banzhang_h3_latent_upscaler_3d, 'NODE_CLASS_MAPPINGS', {})
     H3Latent_Names = getattr(banzhang_h3_latent_upscaler_3d, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -435,7 +435,7 @@ except Exception as e:
 
 # 30. Qwen Image 2.1 编辑台 (参考图走 H3 媒体架/面板槽位，与导演台同一套素材接入口径)
 try:
-    from . import csglide_qwen
+    from .nodes import csglide_qwen
     Qwen_Cls = getattr(csglide_qwen, 'NODE_CLASS_MAPPINGS', {})
     Qwen_Names = getattr(csglide_qwen, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -444,7 +444,7 @@ except Exception as e:
 
 # 31. H3 终极放大（内置纯插值放大 + 空间分块重采样；只注册「参数 + 主节点」两个）
 try:
-    from . import banzhang_mmh3_upscale
+    from .nodes import banzhang_mmh3_upscale
     _H3Up_Cls = getattr(banzhang_mmh3_upscale, 'NODE_CLASS_MAPPINGS', {})
     _H3Up_Names = getattr(banzhang_mmh3_upscale, 'NODE_DISPLAY_NAME_MAPPINGS', {})
     H3Up_Cls = {k: v for k, v in _H3Up_Cls.items()
@@ -470,7 +470,7 @@ H3MC_Cls, H3MC_Names = {}, {}
 
 # 33. 自定义 Sigma 曲线 (前端可视化画曲线，输出 SIGMAS + 步数，直连 KSampler sigmas 口)
 try:
-    from . import banzhang_sigmas_custom
+    from .nodes import banzhang_sigmas_custom
     Sigma_Cls = getattr(banzhang_sigmas_custom, 'NODE_CLASS_MAPPINGS', {})
     Sigma_Names = getattr(banzhang_sigmas_custom, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -499,7 +499,7 @@ except Exception as e:
 #     这边是补丁：挂在 MODEL 上，步数 / 负面词 / 降噪强度都交给官方 K 采样器管，
 #     也能配合自定义 Sigma 曲线等节点。依赖 34 项同款的 _selflift_avatar 上游。
 try:
-    from . import banzhang_selflift_image_patch
+    from .nodes import banzhang_selflift_image_patch
     _SLAVPatch_Cls = getattr(banzhang_selflift_image_patch, 'NODE_CLASS_MAPPINGS', {})
     _SLAVPatch_Names = getattr(banzhang_selflift_image_patch, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -508,7 +508,7 @@ except Exception as e:
 
 # 35. H3 VAE 快速解码 (可调瓦片 + 解码时 PixelShuffle 2x 放大, 合并自 ComfyUI-MiniMaxH3_LatentUpscaler)
 try:
-    from . import banzhang_h3_vae_decode
+    from .nodes import banzhang_h3_vae_decode
     H3VAEDec_Cls = getattr(banzhang_h3_vae_decode, 'NODE_CLASS_MAPPINGS', {})
     H3VAEDec_Names = getattr(banzhang_h3_vae_decode, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -517,7 +517,7 @@ except Exception as e:
 
 # 36. FlashVSR 扩散超分 (自包含, 权重读 models/FlashVSR, 不依赖官方插件与外部程序)
 try:
-    from . import banzhang_flashvsr
+    from .nodes import banzhang_flashvsr
     FlashVSR_Cls = getattr(banzhang_flashvsr, 'NODE_CLASS_MAPPINGS', {})
     FlashVSR_Names = getattr(banzhang_flashvsr, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -527,7 +527,7 @@ except Exception as e:
 # 37. DLSS5 帧生成插帧 (NVIDIA NGX DLSS-FG, 需自备 models/dlss5/dlssg 引擎文件;
 #     RTX 40/50 官方支持, RTX 30 及更早不支持)
 try:
-    from . import banzhang_dlss5_fg
+    from .nodes import banzhang_dlss5_fg
     DLSS5FG_Cls = getattr(banzhang_dlss5_fg, 'NODE_CLASS_MAPPINGS', {})
     DLSS5FG_Names = getattr(banzhang_dlss5_fg, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -537,7 +537,7 @@ except Exception as e:
 # 38. 图片高清放大（二采重绘）(「放大模型」下拉: ⚡插值档/upscale_models 神经网络模型档,
 #     → VAE 编码(可分块); 二采 denoise 交官方 K 采样器; 渐进省显存另接 34b 图片渐进补丁)
 try:
-    from . import banzhang_image_upscale
+    from .nodes import banzhang_image_upscale
     HiresUp_Cls = getattr(banzhang_image_upscale, 'NODE_CLASS_MAPPINGS', {})
     HiresUp_Names = getattr(banzhang_image_upscale, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -547,7 +547,7 @@ except Exception as e:
 # 38b. 图片分块二采 (潜空间二维网格切块, 每块独立采样, 核心区独占 + 余弦过渡窗融合;
 #     显存峰值≈单瓦片, 防 4K OOM; 采样循环走官方 comfy.samplers.sample)
 try:
-    from . import banzhang_image_tiled_ksampler
+    from .nodes import banzhang_image_tiled_ksampler
     TiledKS_Cls = getattr(banzhang_image_tiled_ksampler, 'NODE_CLASS_MAPPINGS', {})
     TiledKS_Names = getattr(banzhang_image_tiled_ksampler, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -557,7 +557,7 @@ except Exception as e:
 # 39. RTX 视频特效三件套 (NVIDIA RTX SDK 硬件加速: 超分/降噪/去模糊 + 转HDR + AI插帧;
 #     需 NVIDIA RTX 显卡, 依赖 nvidia-vfx 未安装时本模块不注册节点并给出安装提示)
 try:
-    from . import banzhang_nvidia_vfx
+    from .nodes import banzhang_nvidia_vfx
     VFX_Cls = getattr(banzhang_nvidia_vfx, 'NODE_CLASS_MAPPINGS', {})
     VFX_Names = getattr(banzhang_nvidia_vfx, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -567,7 +567,7 @@ except Exception as e:
 # 40. 插帧 RIFE/EMA (开源模型, 不挑显卡, 30 系插帧的解决方案; 权重缺失时自动下载)
 #     RIFE: v4.26 / v4.25 双版权重可选;  EMA-VFI: 画质更高一档(固定单精度)
 try:
-    from . import banzhang_rife
+    from .nodes import banzhang_rife
     RIFE_Cls = getattr(banzhang_rife, 'NODE_CLASS_MAPPINGS', {})
     RIFE_Names = getattr(banzhang_rife, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -576,7 +576,7 @@ except Exception as e:
 
 # 41. YuE2 智能乐谱中枢 (一个节点收口 ABC：智能路由文生规划 / 翻唱转谱 / 手动 / 直生)
 try:
-    from . import banzhang_yue2_smart
+    from .nodes import banzhang_yue2_smart
     SmartPlan_Cls = getattr(banzhang_yue2_smart, 'NODE_CLASS_MAPPINGS', {})
     SmartPlan_Names = getattr(banzhang_yue2_smart, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -589,7 +589,7 @@ except Exception as e:
 #     每次换纸抬上去的都是一张画完的图。复用 28 项同一套
 #     换纸/分块/钳位实现（继承 _SelfLiftMultiStage，只重写采样主流程）。
 try:
-    from . import banzhang_selflift_fullstage
+    from .nodes import banzhang_selflift_fullstage
     SelfLiftFull_Cls = getattr(banzhang_selflift_fullstage, 'NODE_CLASS_MAPPINGS', {})
     SelfLiftFull_Names = getattr(banzhang_selflift_fullstage, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -606,7 +606,7 @@ Veda_Cls, Veda_Names = {}, {}
 #     前端 1 秒一拉，苹果活动监视器风格面板；对外提供 打标记() 给净化🧹联动，
 #     曲线上标「净化前/净化后」)
 try:
-    from . import banzhang_mem_graph
+    from .nodes import banzhang_mem_graph
     MemGraph_Cls = getattr(banzhang_mem_graph, 'NODE_CLASS_MAPPINGS', {})
     MemGraph_Names = getattr(banzhang_mem_graph, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -617,7 +617,7 @@ except Exception as e:
 # 文本编码器换成 4B/8B + 学出来的线性矩阵，显存 15.7GB → 4.5GB。
 # 只搬了 Apply 一个节点，原包的全局猴补丁与多卡固定一概不要。
 try:
-    from . import banzhang_clipproj
+    from .nodes import banzhang_clipproj
     ClipProj_Cls = getattr(banzhang_clipproj, 'NODE_CLASS_MAPPINGS', {})
     ClipProj_Names = getattr(banzhang_clipproj, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -627,7 +627,7 @@ except Exception as e:
 # 27. 🎬 MV 规划台：独立外挂节点，只通过标准 STRING 端口驱动导演台，
 # 不改动媒体架/文案台/导演台；加载失败不影响其他任何节点。
 try:
-    from . import banzhang_mv_planner
+    from .nodes import banzhang_mv_planner
     MVPlan_Cls = getattr(banzhang_mv_planner, 'NODE_CLASS_MAPPINGS', {})
     MVPlan_Names = getattr(banzhang_mv_planner, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -637,7 +637,7 @@ except Exception as e:
 # 28. 🪞 人脸修复台：独立外挂节点，插在一采与二采之间、latent 主干，零侵入；
 # 承载方案 C + 五巧思（_facefix 子包）；加载失败不影响其他任何节点。
 try:
-    from . import banzhang_facefix
+    from .nodes import banzhang_facefix
     FaceFix_Cls = getattr(banzhang_facefix, 'NODE_CLASS_MAPPINGS', {})
     FaceFix_Names = getattr(banzhang_facefix, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
@@ -646,12 +646,25 @@ except Exception as e:
 
 # 46. RelayVSR 大小模型接力超分 (3 节点, 权重读 models/relayvsr, 自包含算法层 _relayvsr/)
 try:
-    from . import banzhang_relayvsr
+    from .nodes import banzhang_relayvsr
     RelayVSR_Cls = getattr(banzhang_relayvsr, 'NODE_CLASS_MAPPINGS', {})
     RelayVSR_Names = getattr(banzhang_relayvsr, 'NODE_DISPLAY_NAME_MAPPINGS', {})
 except Exception as e:
+    import traceback
     print(f"⚠️ [班长全家桶] RelayVSR 超分节点加载失败: {e}")
+    traceback.print_exc()   # 只打一行的话用户永远查不出是缺哪个依赖
     RelayVSR_Cls, RelayVSR_Names = {}, {}
+
+# 47. 已注销节点的兼容别名（只让老工作流/模板能打开，不恢复旧功能）
+try:
+    from .nodes import banzhang_compat_aliases
+    Compat_Cls = getattr(banzhang_compat_aliases, 'NODE_CLASS_MAPPINGS', {})
+    Compat_Names = getattr(banzhang_compat_aliases, 'NODE_DISPLAY_NAME_MAPPINGS', {})
+except Exception as e:
+    import traceback
+    print(f"⚠️ [班长全家桶] 旧工作流兼容节点加载失败: {e}")
+    traceback.print_exc()
+    Compat_Cls, Compat_Names = {}, {}
 
 # ==============================================================================
 # 合并所有节点映射
@@ -695,6 +708,7 @@ NODE_CLASS_MAPPINGS = {
     **H3VAEDec_Cls,
     **FlashVSR_Cls,
     **RelayVSR_Cls,
+    **Compat_Cls,
     **DLSS5FG_Cls,
     **HiresUp_Cls,
     **TiledKS_Cls,
@@ -754,6 +768,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **H3VAEDec_Names,
     **FlashVSR_Names,
     **RelayVSR_Names,
+    **Compat_Names,
     **DLSS5FG_Names,
     **HiresUp_Names,
     **TiledKS_Names,
@@ -778,10 +793,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # H3 涟漪三节点（界面已汉化，分类 👨‍🏫班长/MiniMax H3）
 # ==============================================================================
 try:
-    import banzhang_ripple_clip as _RippleClip
-    import banzhang_ripple_apply as _RippleApply
-    import banzhang_ripple_output as _RippleOutput
-    import banzhang_ripple_cache  # 模块导入时自行注册接口与缓存头
+    from .nodes import banzhang_ripple_clip as _RippleClip
+    from .nodes import banzhang_ripple_apply as _RippleApply
+    from .nodes import banzhang_ripple_output as _RippleOutput
+    from .core import banzhang_ripple_cache
 
     for _mod in (_RippleClip, _RippleApply, _RippleOutput):
         NODE_CLASS_MAPPINGS.update(_mod.NODE_CLASS_MAPPINGS)
@@ -793,13 +808,13 @@ except Exception as e:
 # 视频文件被塞进图片预览通道时的兜底：/view?preview=… 对 mp4 会抛
 # PIL.UnidentifiedImageError，这里改成返回首帧缩略图（模块导入时自行注册中间件）。
 try:
-    import banzhang_view_guard  # noqa: F401
+    from .core import banzhang_view_guard
 except Exception as e:
     print(f"⚠️ [班长全家桶] 视频预览兜底未注册: {e}")
 
 # H3 风格旋钮：多路 dial 方向向量合并为一次注入（权重与中文表在 dials/）。
 try:
-    import banzhang_h3_dial as _H3Dial
+    from .nodes import banzhang_h3_dial as _H3Dial
     NODE_CLASS_MAPPINGS.update(_H3Dial.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_H3Dial.NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:

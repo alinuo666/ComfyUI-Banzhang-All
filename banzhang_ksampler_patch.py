@@ -42,7 +42,7 @@ def _copy_pinned(dst, src, head, tail, tag="H3 尾帧回填"):
     拷掉 22 步 = 73 帧，重抽成果被旧版盖掉一半，交界位置也整个后移 3 倍。
     换算走 pin_extent，与「🧷 H3 尾帧回填」节点同一份实现。
     """
-    from .banzhang_h3_pin import (PIN_FEATHER, blend_edge, pin_extent,
+    from .nodes.banzhang_h3_pin import (PIN_FEATHER, blend_edge, pin_extent,
                                   pin_feather_weights)
 
     copied, feathered, streams = 0, 0, []
@@ -97,7 +97,7 @@ def _restore_pinned_tail(out, tag="H3 尾帧回填"):
         tail = max(0, int(spec.get("tail") or 0))
         if head <= 0 and tail <= 0:
             return
-        from .csglide_clip import CSGlideClipLoadCS
+        from .nodes.csglide_clip import CSGlideClipLoadCS
         ref, _info = CSGlideClipLoadCS().load(
             片名=spec.get("name") or "", 段落=spec.get("cid") or "", 版本=0,
             没有档案时="直通（不回填）")

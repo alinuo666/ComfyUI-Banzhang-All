@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .banzhang_dlss5_fg_media import (
+from .core.banzhang_dlss5_fg_media import (
     NvofGuideGenerator, StreamEncoder, TemporalGuideGenerator, build_video, video_from_file,
 )
 

@@ -17,7 +17,15 @@ import json
 import torch
 import torch.nn.functional as F
 
-from comfy.quant_ops import QuantizedTensor, get_layout_class
+# 量化后端只在使用 W4A8 / fp8 权重时才需要。软导入后，旧版 ComfyUI 下
+# 普通浮点权重包依然可用、节点依然注册；只有真去读量化层时才报错。
+try:
+    from comfy.quant_ops import QuantizedTensor, get_layout_class
+except Exception as _量化后端异常:  # noqa: BLE001 - 兼容旧版 ComfyUI
+    QuantizedTensor, get_layout_class = None, None
+    _量化后端原因 = str(_量化后端异常)
+else:
+    _量化后端原因 = None
 
 INT8_LAYOUT = "TensorWiseINT8Layout"
 
@@ -71,6 +79,12 @@ def _quantized_weight(handle, key, device, dtype):
     格式/键名对齐 comfy/ops.py:1285-1381，量化权重由 _relayvsr/quantize_weights.py 产出。
     W4A8 的 fp8 分组 scale 在 safetensors 里以 uint8 保存，读回来要 view 回 fp8。
     """
+    if get_layout_class is None:
+        raise RuntimeError(
+            "当前 ComfyUI 缺少 comfy/quant_ops.py，无法读取 W4A8 / fp8 量化权重。"
+            "请升级 ComfyUI，或在「权重包」里改选原版浮点权重"
+            f"（导入错误：{_量化后端原因}）。"
+        )
     from comfy.quant_ops import QUANT_ALGOS
 
     module = key[: -len(".weight")]

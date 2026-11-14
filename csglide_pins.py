@@ -391,7 +391,7 @@ def resolve_sources(name, cid, log=None, drop_head=False):
     """
     from . import csglide_chain as _chain
     try:
-        from .csglide_cast import _MC_Load
+        from .nodes.csglide_cast import _MC_Load
     except Exception:
         _MC_Load = None
     if _MC_Load is None:

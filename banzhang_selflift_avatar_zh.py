@@ -17,7 +17,7 @@ import comfy.model_management
 import comfy.samplers
 
 from ._selflift_avatar import nodes as _sl
-from .banzhang_selflift import _parse_num_list
+from .nodes.banzhang_selflift import _parse_num_list
 from . import banzhang_selflift_image_multistage as _image_ms
 
 _SL_CATEGORY = "👨‍🏫班长/MiniMax H3"

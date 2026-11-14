@@ -30,7 +30,7 @@ from ._selflift_avatar import avatar_masks
 from ._selflift_avatar import selflift as _slf
 from ._selflift_avatar.avatar_sampling import native_mask_model
 from ._selflift_avatar.nodes import _euler_step, _validate_sampling, _validate_schedule
-from .banzhang_selflift import _suggest_split
+from .nodes.banzhang_selflift import _suggest_split
 
 _TAG = "🎯 SelfLift 图片多级渐进"
 
