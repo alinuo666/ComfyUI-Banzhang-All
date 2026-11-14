@@ -64,6 +64,12 @@ Note: model weights carry their own license — the MiniMax H3 Community License
 
 ## Changelog
 
+### 2026-11-14
+
+- Refactor: 59 node modules moved into nodes/; shared libraries into core/; root Python files reduced from 115 to 19.
+- Docs: AGENTS.md is now the single source of truth; four references to non-existent docs files removed; a placement rule for new .py files added.
+- Packaging: release whitelist now includes nodes/; verified by a full three-pass H3 workflow with three MP4 outputs.
+
 ### 2026-11-13
 
 - New: H3 Image image-model support in the Image Studio — video-latent static-frame channel layout (24ch, 5-dim with T=1). The prompt-rewrite path needs an external text model (same mechanism as the Desk).
@@ -156,6 +162,12 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 注意：模型权重有独立许可，MiniMax H3 Community License 含地域与营收门槛等限制，商用前请自行确认；`NOTICE.md` 所列第三方组件（尤其 `_h3mc/`，GPLv3）也不在可授权范围内，仍须遵守各自许可。
 
 ## 更新日志
+
+### 2026-11-14
+
+- 重构：59 个节点归位到 nodes/，共用库集中到 core/，根目录 Python 文件从 115 个降到 19 个。
+- 文档：AGENTS.md 升格为唯一事实源，注销 4 个从未存在的 docs 文档引用，新增 .py 归位约定。
+- 发布：发布层白名单加入 nodes/；已用完整三采工作流验证（三个 mp4 均出片）。
 
 ### 2026-11-13
 
