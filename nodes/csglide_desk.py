@@ -230,13 +230,15 @@ def _rewrite_model_names():
 
 
 def _resolve_rewrite_model(model_file):
-    """用户选的模型文件名 → folder_paths 相对路径；空 = 默认。找不到列出候选。"""
+    """用户选的模型文件名 → folder_paths 相对路径；空 = 默认。找不到退回第一个可用。"""
     base = ((model_file or "").strip() or _REWRITE_MODEL_FILE).replace("\\", "/").split("/")[-1]
-    for n in _rewrite_model_names():
+    names = _rewrite_model_names()
+    for n in names:
         if n.split("/")[-1] == base:
             return n
-    raise FileNotFoundError(
-        "改写模型 %s 没找到，可选的有：%s" % (base, "、".join(_rewrite_model_names())))
+    if names:
+        return names[0]
+    raise FileNotFoundError("改写模型 %s 没找到，text_encoders 目录里也没有任何候选" % base)
 
 
 def _get_rewrite_clip(log, model_file=None):
@@ -572,7 +574,8 @@ try:
         @PromptServer.instance.routes.get("/csglide_desk/models")
         async def _文案台模型列表(request):
             # 改写模型下拉候选（MOSS-Image 优先）；default 供前端标出默认项。
-            return web.json_response({"models": _rewrite_model_names(),
-                                      "default": _REWRITE_MODEL_FILE})
+            names = _rewrite_model_names()
+            return web.json_response({"models": names,
+                                      "default": names[0] if names else _REWRITE_MODEL_FILE})
 except ImportError:
     pass    # 无 server 环境（自检）跑不到这里

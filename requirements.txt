@@ -18,6 +18,11 @@ imageio-ffmpeg>=0.4.0
 # (PyAV: ffmpeg 库随 Python 包自带, 无需系统安装 ffmpeg; GIF/WEBP 动图走 Pillow)
 av>=12.0.0
 
+# 可选：RelayVSR「字幕/台标硬边保护」。不装也能跑 —— 缺 cv2 时该增强自动跳过，
+# 超分照常出图，只是硬边锐度略低。ComfyUI 官方本身不装 opencv，别假设用户有。
+# 想启用，用 ComfyUI 自己的 Python 装一个变体即可（多个 opencv-* 同时装会互相覆盖）：
+#   pip install opencv-python-headless
+
 # ==================== API 调用依赖 ====================
 # 用于 Banana2 图像编辑 API 节点
 requests>=2.25.0

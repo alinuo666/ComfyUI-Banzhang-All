@@ -4,10 +4,29 @@
 判据不认内容而认破坏：源里是硬边（2px 跨度差 / 6px 跨度差 接近 1）、超分缩回源尺寸后变软
 （比值明显下降）的像素，才是被画坏的地方；自然软边的源比值本来就低，不会误判。
 保护区改用干净立方插值放大贴回，并按邻域色差场补偿色调，避免与超分区之间出现亮度台阶。
+
+cv2 是可选增强：ComfyUI 官方不装 opencv，导入期碰它会让整组 RelayVSR 节点静默消失。
+缺库时 protect_frame 原样返回超分结果，只是字幕/台标硬边保护不生效。
 """
 
-import cv2
 import numpy as np
+
+_cv2 = None
+_已提示 = False
+
+
+def _取cv2():
+    """用的时候才加载；没装返回 None，绝不拖垮节点注册。"""
+    global _cv2, _已提示
+    if _cv2 is None and not _已提示:
+        try:
+            import cv2
+            _cv2 = cv2
+        except Exception:
+            _已提示 = True
+            print("⏭️ [班长 RelayVSR] 未装 opencv，跳过「字幕/台标硬边保护」，超分照常出图；"
+                  "想启用请在 ComfyUI 的 Python 里装 opencv-python-headless。")
+    return _cv2
 
 _EDGE_MIN = 120.0     # 6px 跨度差低于此值不算边：滤掉压缩块边等低对比硬边，只认字/箭头级高对比
 _SRC_RATIO = 0.7      # 源比值高于此 = 硬边
@@ -33,7 +52,7 @@ def _ratio_map(gray):
     return r
 
 
-def _mask(src_gray, sr_gray):
+def _mask(cv2, src_gray, sr_gray):
     flag = ((_ratio_map(src_gray) > _SRC_RATIO) & (_ratio_map(sr_gray) < _SR_RATIO)).astype(np.uint8)
     m = cv2.dilate(flag, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * _DILATE + 1, 2 * _DILATE + 1)))
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE,
@@ -45,7 +64,7 @@ def _mask(src_gray, sr_gray):
     return keep[lab].astype(np.uint8)
 
 
-def _offset_field(src, sr_down, mask):
+def _offset_field(cv2, src, sr_down, mask):
     """非保护区的「超分-源」色差做归一化卷积：每个保护块跟自家邻域色调。
 
     全局中位在混合画面（一半奶油画布一半室内）会偏色，局部场才能让箭头 / 字幕各跟各的背景。
@@ -65,14 +84,17 @@ def protect_frame(source, sr):
 
     没有破坏痕迹时原样返回 sr，自然画面一个像素都不碰。
     """
+    cv2 = _取cv2()
+    if cv2 is None:
+        return sr
     src = np.ascontiguousarray(source.permute(1, 2, 0).numpy())
     height, width = sr.shape[:2]
     sr_down = cv2.resize(sr, (src.shape[1], src.shape[0]), interpolation=cv2.INTER_AREA)
-    mask = _mask(cv2.cvtColor(src, cv2.COLOR_RGB2GRAY), cv2.cvtColor(sr_down, cv2.COLOR_RGB2GRAY))
+    mask = _mask(cv2, cv2.cvtColor(src, cv2.COLOR_RGB2GRAY), cv2.cvtColor(sr_down, cv2.COLOR_RGB2GRAY))
     if not mask.any():
         return sr
     clean = cv2.resize(src, (width, height), interpolation=cv2.INTER_CUBIC).astype(np.float32)
-    clean += cv2.resize(_offset_field(src, sr_down, mask), (width, height), interpolation=cv2.INTER_LINEAR)
+    clean += cv2.resize(_offset_field(cv2, src, sr_down, mask), (width, height), interpolation=cv2.INTER_LINEAR)
     alpha = cv2.resize(mask.astype(np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
     alpha = cv2.GaussianBlur(alpha, (0, 0), _FEATHER)[..., None]
     blended = sr.astype(np.float32) * (1 - alpha) + np.clip(clean, 0, 255) * alpha
