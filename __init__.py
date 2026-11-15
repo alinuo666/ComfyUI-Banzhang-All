@@ -790,6 +790,19 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # ==============================================================================
+# 流程控制：🔗 顺序锚（用真实依赖边固定一采/二采先后）
+# ==============================================================================
+try:
+    from .nodes import banzhang_order_anchor as _OrderAnchor
+    NODE_CLASS_MAPPINGS.update(_OrderAnchor.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_OrderAnchor.NODE_DISPLAY_NAME_MAPPINGS)
+    print("✅ [班长全家桶] 🔗 顺序锚已注册")
+except Exception as e:
+    import traceback
+    print(f"⚠️ [班长全家桶] 顺序锚节点加载失败: {e}")
+    traceback.print_exc()
+
+# ==============================================================================
 # H3 涟漪三节点（界面已汉化，分类 👨‍🏫班长/MiniMax H3）
 # ==============================================================================
 try:
