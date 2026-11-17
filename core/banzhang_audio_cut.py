@@ -681,6 +681,10 @@ def _register_routes():
         末段音源不够就**连画面段长一起缩短**到剩余音频实际时长。缩短必须在
         reslice_drivers 之前改完档案，随后那一次重切才会按新 clip_to 裁 ——
         改档案与重切是同一事务，音频只切一次，两者不可能分叉。
+
+        20261117：带 seg_frames（每段秒数对应的合法总帧数）时，缩短之前先把
+        音频范围内的段长统一到它 —— 段数按每段秒数算、段长也按它写，两个数
+        同源，尾段才不会因继承的面板旧时长偏大而被饿成无驱动空壳。
         """
         try:
             body = await request.json()
@@ -689,6 +693,10 @@ def _register_routes():
         name = str(body.get("name") or "").strip()
         files = [str(x).strip() for x in (body.get("files") or []) if x]
         shrink = bool(body.get("shrink_frames"))
+        try:
+            seg_frames = int(body.get("seg_frames") or 0)
+        except (TypeError, ValueError):
+            seg_frames = 0
         if not name:
             return web.json_response({"错误": "缺少片名"}, status=400)
         # 换音频 / 重排段 / 删轨时轨号变了，旧布局按旧轨号与旧段存，必须作废：
@@ -713,16 +721,23 @@ def _register_routes():
 
         def _work():
             """全在这条线程里跑：几十次 ffmpeg 占着事件循环会把整个界面冻住。"""
-            pre = {}
+            pre, align = {}, {}
             if shrink:
                 # 只改档案 frames，不重切；紧接着 reslice_drivers 读新 clip_to
                 # 一次切完。返回的新帧数清单交给前端写齐面板预设。
                 from .. import csglide_chain as _chain
+                # 带 seg_frames 时先把音频范围内的段长统一到「每段秒数」——
+                # 段数与段长同源，尾段余数才不会被前面的段偷走（20261117）。
+                if seg_frames > 0:
+                    align = _chain.align_frames_to_audio(
+                        name, seg_frames, files) or {}
                 pre = _chain.shrink_tail_to_audio(name, files) or {}
             res = reslice_drivers(name, files)
             if shrink:
                 res = dict(res)
                 res["末段缩短"] = pre
+                if seg_frames > 0:
+                    res["段长对齐"] = align
             return res
 
         try:

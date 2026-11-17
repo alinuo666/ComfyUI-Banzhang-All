@@ -64,6 +64,12 @@ Note: model weights carry their own license — the MiniMax H3 Community License
 
 ## Changelog
 
+### 2026-11-15
+
+- Fixed: RelayVSR nodes failing to register on setups without OpenCV (e.g. Comfy-Desktop). Optional third-party imports are now forbidden at module top level in the algorithm layer, enforced by a self-test gate.
+- Removed: RelayVSR graphic and text-edge protection, which caused over-sharpening. Frames now go from the model straight to the encoder with no pixel post-processing.
+- Added: compatibility aliases for retired nodes so older workflow templates open without missing-node prompts, plus an order-anchor node for multi-pass H3 workflows.
+
 ### 2026-11-14
 
 - Refactor: 59 node modules moved into nodes/; shared libraries into core/; root Python files reduced from 115 to 19.
@@ -162,6 +168,12 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 注意：模型权重有独立许可，MiniMax H3 Community License 含地域与营收门槛等限制，商用前请自行确认；`NOTICE.md` 所列第三方组件（尤其 `_h3mc/`，GPLv3）也不在可授权范围内，仍须遵守各自许可。
 
 ## 更新日志
+
+### 2026-11-15
+
+- 修复：未安装 opencv 的环境（如 Comfy-Desktop）里 RelayVSR 三个节点整组不注册；算法层顶层禁止可选第三方依赖，并加了自检闸门。
+- 移除：RelayVSR 字幕/台标图形区保护（反馈锐化过重）；现在模型出帧直接进编码器，不做像素后处理。
+- 新增：已注销节点的兼容别名，旧模板打开不再弹「节点缺失」；三采工作流用的「🔗 顺序锚」节点。
 
 ### 2026-11-14
 

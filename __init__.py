@@ -239,6 +239,15 @@ except Exception as e:
     print(f"⚠️ [班长全家桶] 互斥选路器节点加载失败: {e}")
     RouteSwitch_Cls, RouteSwitch_Names = {}, {}
 
+# 16.6 H3 高清重采预置 (二采前处理五合一：放大+编码+AV拼接+参考条件)
+try:
+    from .nodes import banzhang_h3_hd_reseed
+    HDReseed_Cls = getattr(banzhang_h3_hd_reseed, 'NODE_CLASS_MAPPINGS', {})
+    HDReseed_Names = getattr(banzhang_h3_hd_reseed, 'NODE_DISPLAY_NAME_MAPPINGS', {})
+except Exception as e:
+    print(f"⚠️ [班长全家桶] H3 高清重采预置节点加载失败: {e}")
+    HDReseed_Cls, HDReseed_Names = {}, {}
+
 # 17. 开发工具 (URL下载、文件上传、执行时间统计)
 try:
     from .nodes import banzhang_dev_utils
@@ -689,6 +698,7 @@ NODE_CLASS_MAPPINGS = {
     **CleanVram_Cls,
     **Conv_Cls,
     **RouteSwitch_Cls,
+    **HDReseed_Cls,
     **DevUtils_Cls,
     **LoraSafe_Cls,
     **Glide_Cls,
@@ -749,6 +759,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **CleanVram_Names,
     **Conv_Names,
     **RouteSwitch_Names,
+    **HDReseed_Names,
     **DevUtils_Names,
     **LoraSafe_Names,
     **Glide_Names,
@@ -969,6 +980,14 @@ try:
     _ensure_aimdo()
 except Exception as _e:
     print(f"⚠ 启动期兼容检查没跑起来：{type(_e).__name__}: {_e}")
+
+# 17. 按步 LoRA 强度（按 sigma 逐步调 LoRA，把多步轨迹适配到少步采样）
+try:
+    from .nodes import banzhang_sigma_lora as _SigmaLora
+    NODE_CLASS_MAPPINGS.update(_SigmaLora.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_SigmaLora.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 按步 LoRA 强度节点加载失败: {e}")
 
 print("=" * 60)
 print("🚀 所有节点已准备就绪！开始创作吧！")

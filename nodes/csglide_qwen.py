@@ -786,8 +786,17 @@ class CSGlideImageCast:
             # H3 Image：tokenize 用 picture_label="Picture %d: "（与官方一致，
             # 无尖括号——tokenizer 默认带尖括号，官方显式覆盖）。
             # 参考图走 minimax_refs 条件键（不是 reference_latents）。
+            # 无参考图时 Qwen3-VL 视觉塔没有任何输入，纹理细节会塌；补一张
+            # 中性视觉输入只激活视觉塔，不进 VAE / minimax_refs / 画布基准。
+            h3_images = images_vl
+            if not h3_images:
+                h3_images = [torch.zeros(
+                    (1, H3_REF_VISION_SHORT, H3_REF_VISION_SHORT, 3),
+                    dtype=torch.float32)]
+                log("【中性视觉】已补中性视觉参考（只进视觉塔，不进 VAE）；"
+                    "本次仍按纯文生图出片，画布取面板尺寸")
             positive = clip.encode_from_tokens_scheduled(
-                clip.tokenize(prompt, images=images_vl, picture_label="Picture %d: "))
+                clip.tokenize(prompt, images=h3_images, picture_label="Picture %d: "))
             if ref_latents:
                 positive = node_helpers.conditioning_set_values(
                     positive, {"minimax_refs": ref_latents})

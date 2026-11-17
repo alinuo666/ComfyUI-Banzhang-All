@@ -461,9 +461,10 @@ export function installReview(ui) {
       }
       /* 改链上节点的输入：
          · 引到「导演台整片口」的 → 改接到注入的加载器视频口（整片文件）；
-         · 引到导演台其他口（正面条件等）或整片链之外节点的 → 删除（避免
-           拉进 KSampler / CLIP / VAE 等重链）；
-         · 链内引用保留。 */
+         · 引到导演台其他口（正面条件等）的 → 删除（避免拉进 KSampler / CLIP /
+           VAE 等重链，那是要省的重活）；
+         · 链内引用、以及链外的轻量上游（如 RelayVSR 加载器的「模型」）→ 保留，
+           由下方反向闭包把来源节点收进子图（必填输入剥不得，否则缺模型 400）。 */
       for (const nid of forward) {
         const e = out[nid];
         if (!e || !e.inputs) continue;
@@ -476,9 +477,16 @@ export function installReview(ui) {
             e.inputs[k] = [LOADER_ID, LOADER_VIDEO_SLOT];
           } else if (forward.has(src)) {
             /* 链内引用，保留 */
-          } else {
-            console.log("[推送整片] 剥离 %s 的外部输入 %s（整片链之外）", nid, k);
+          } else if (src === String(castNode.id)) {
+            /* 导演台其他口（正面条件等）：剥掉，避免把 KSampler/CLIP/VAE 重链
+               拉进子图——那正是推送整片要省的重活，整片口已由加载器顶替。 */
+            console.log("[推送整片] 剥离 %s 的导演台输入 %s（重链，由加载器顶替）", nid, k);
             delete e.inputs[k];
+          } else {
+            /* 链外的轻量上游（如 RelayVSR 加载器的「模型」）：保留，交给下方
+               反向闭包把来源节点收进子图。先剥后收会把必填输入误剥——流式超分
+               缺模型 → 400（20261116 用户报）。隔壁推送整片潜空间本就是先收闭包
+               再剪，这里对齐它：只有导演台重链该剥，处理链必需的上游不该剥。 */
           }
         }
       }

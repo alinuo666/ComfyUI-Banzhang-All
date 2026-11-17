@@ -15,6 +15,21 @@ from .rope import apply_rope
 from .weights import rms_norm
 
 
+# 容差 4/255（[-1,1] 域）：两条真实样本实测，光晕像素占比归零且细节能量保留约九成；
+# 再小会把平滑区抹糊，再大光晕残留。标定过程见 PROJECT.md 2026-11-16 过度锐化条目。
+_HALO_TOL = 4.0 / 127.5
+
+
+def _halo_bounds(lr, size):
+    """源帧 3x3 局部上下界升到输出尺寸。replicate 补边避免空间分块接缝。"""
+    pad = F.pad(lr, (1, 1, 1, 1), mode="replicate")
+    mx = F.max_pool2d(pad, 3, stride=1)
+    mn = -F.max_pool2d(-pad, 3, stride=1)
+    mx = F.interpolate(mx, size=size, mode="bilinear", align_corners=False)
+    mn = F.interpolate(mn, size=size, mode="bilinear", align_corners=False)
+    return mn - _HALO_TOL, mx + _HALO_TOL
+
+
 def _embedding(tensor):
     # 官方权重把类型嵌入存成 (1, dim) 或 (1, 1, dim)。
     return tensor[0].reshape(-1)
@@ -182,4 +197,8 @@ class FlashTransformer:
         )
         channels = pixels.shape[1]
         residual = F.pixel_shuffle(pixels.t().reshape(1, channels, height, width), 16)
-        return F.interpolate(lr, scale_factor=self.geometry.scale, mode="bicubic", align_corners=False) + residual
+        out = F.interpolate(lr, scale_factor=self.geometry.scale, mode="bicubic", align_corners=False) + residual
+        # 模型残差自带过冲光晕（上游 issue #4 的过度锐化），锐度全在这一项里；
+        # 按源帧局部范围钳制：光晕被压回源的范围，范围内的细节原样保留。
+        mn, mx = _halo_bounds(lr, out.shape[-2:])
+        return out.clamp(mn, mx)

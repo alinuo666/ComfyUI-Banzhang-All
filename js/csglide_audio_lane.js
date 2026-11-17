@@ -1147,12 +1147,21 @@ export function mountAudioLane(opts = {}) {
     }
   }
 
-  /* 段数按净长算：ceil 之后若余数不足 1 帧，并回上一段，避免出现半帧段。 */
+  /* 段数按净长算：ceil 之后若余数不足 0.05 秒，并回上一段 —— 与后端
+     「有效音频不足 0.05 秒不给驱动」同一把尺子，别建注定无驱动的尾段。 */
   function countFor(dur) {
-    const f = fpsOf();
     let n = Math.max(1, Math.ceil(dur / segSec - 1e-9));
-    if (n > 1 && (dur - (n - 1) * segSec) * f < 1) n -= 1;
+    if (n > 1 && dur - (n - 1) * segSec < 0.05) n -= 1;
     return n;
+  }
+
+  /* 「每段秒数」→ 生成总帧数的唯一换算：一次吸到 17k+5 格（与后端
+     snap_frames 同格）。不额外加承接帧 —— 首段没有承接，统一加了会让
+     尾段音频又被多吃一截。 */
+  function segFrames() {
+    const f = fpsOf();
+    const n = 5 + 17 * Math.round((segSec * f - 5) / 17);
+    return Math.max(5, Math.min(MAX_FRAMES, n));
   }
 
   /* 把「每段 N 秒」落成 H3 的合法帧。
@@ -1194,7 +1203,7 @@ export function mountAudioLane(opts = {}) {
   async function placeSegments(files) {
     return (await askJson("/banzhang/audio/auto_slice",
                           { name: nameOf(), files: files || [],
-                            shrink_frames: true })) || {};
+                            shrink_frames: true, seg_frames: segFrames() })) || {};
   }
 
   /* 把后端 auto_slice 带回的每段峰值灌进各轨缓存 —— 波形唯一的真值源。
@@ -1230,22 +1239,26 @@ export function mountAudioLane(opts = {}) {
     }
   }
 
-  /* 后端把末段 frames 缩短后，导演台面板预设必须跟着改 —— 这一步是
-     20261109 事故里唯一缺的那一环。只改档案不改面板，下一次渲染登记时
-     后端会拿旧的 shot.state.length 把档案静默改回去。
-     帧数用后端**回读**的真实值（不是前端估算），rows 用刷新后的 film。 */
+  /* 后端把段长改完（对齐到每段秒数 / 末段按音频缩短）后，导演台面板预设
+     必须跟着改 —— 这一步是 20261109 事故里唯一缺的那环。只改档案不改面板，
+     下一次渲染登记时后端会拿旧的 shot.state.length 把档案静默改回去。
+     帧数用后端**回读**的真实值（不是前端估算），rows 用刷新后的 film。
+     两份回执取最新：缩短在对齐之后跑，它改过就用它的；否则用对齐的。 */
   async function syncFramesFromSlice(j) {
     const pre = j && j["末段缩短"];
-    const frames = pre && Array.isArray(pre["帧数"]) ? pre["帧数"] : null;
-    if (!frames || !frames.length || !Number(pre["已缩短"])) return null;
+    const align = j && j["段长对齐"];
+    const src = (pre && Number(pre["已缩短"]) ? pre
+              : (align && Number(align["已改"]) ? align : null));
+    const frames = src && Array.isArray(src["帧数"]) ? src["帧数"] : null;
+    if (!frames || !frames.length) return null;
     await loadFilm();
     if (typeof opts.syncShotFrames === "function") {
       opts.syncShotFrames(frames, clipsOf());
     } else {
-      console.warn("[audio-lane] 导演台没给帧数回写入口：末段已按音频缩短，"
+      console.warn("[audio-lane] 导演台没给帧数回写入口：段长已按音频改好，"
         + "但面板预设还是旧值，下一次渲染可能把它改回去。请 Ctrl+F5 刷新");
     }
-    return pre;
+    return src;
   }
 
   async function rebuild(t, dur, sr) {
@@ -1400,6 +1413,7 @@ export function mountAudioLane(opts = {}) {
     const drv = Number(j["驱动段数"]) || 0;
     const mixed = Number(j["混音段数"]) || 0;
     const shortened = Number(j["缩短段数"]) || 0;
+    const aligned = Number((j["段长对齐"] || {})["已改"]) || 0;
     const thin = (j["明细"] || [])
       .filter((x) => Number(x["轨数"]) < files.length).length;
     const noDrv = Math.max(0, segs - drv);
@@ -1407,6 +1421,7 @@ export function mountAudioLane(opts = {}) {
         + (added ? `（新增 ${added} 段空档案）` : "")
         + `，${files.length} 条轨 → 生成 ${drv} 段驱动音频`
         + (mixed ? `（其中 ${mixed} 段多轨混音）` : "（单轨直用）")
+        + (aligned ? `；${aligned} 段段长已对齐到每段 ${segSec} 秒` : "")
         + (thin ? `；有 ${thin} 段副轨较短，只按实际有音频的轨驱动` : "")
         + (shrink && Number(shrink["已缩短"])
           ? `；末段音源只剩 ${Number((shrink["明细"] || [{}])[0]["剩余音频秒"]) || 0} 秒，`
@@ -1450,9 +1465,11 @@ export function mountAudioLane(opts = {}) {
       applySlices(slice || {});
       for (const t of tracks) await rebuild(t, t.dur, t.sr);
       const drv = Number((slice || {})["驱动段数"]) || 0;
+      const aligned = Number(((slice || {})["段长对齐"] || {})["已改"]) || 0;
       tip(`已按每段 ${segSec} 秒排成 ${need} 段`
           + (added ? `（新增 ${added} 段）` : "")
           + `，${tracks.length} 条音轨重切成 ${drv} 段驱动音频`
+          + (aligned ? `；${aligned} 段段长已对齐到每段 ${segSec} 秒` : "")
           + (shrink && Number(shrink["已缩短"])
             ? `；末段画面也按剩余音频缩到 ${Number((shrink["明细"] || [{}])[0]["新帧"]) || 0} 帧` : "")
           + (extra ? `；多出的 ${extra} 段不在音频内，没动` : "")

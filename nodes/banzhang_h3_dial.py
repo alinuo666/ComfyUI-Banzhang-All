@@ -143,7 +143,7 @@ class BanZhang_H3_Dial:
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("模型",)
     FUNCTION = "apply_dials"
-    CATEGORY = "班长/风格控制"
+    CATEGORY = "👨‍🏫班长/风格控制"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):

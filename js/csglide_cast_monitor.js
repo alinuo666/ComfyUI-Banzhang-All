@@ -265,6 +265,12 @@ export function installMonitor(ui) {
         const s = p.shots.find((x) => x && x.clip === rows[i].id);
         if (s && s.state && s.state.length !== frames[i]) {
           s.state.length = frames[i];
+          /* 当前段的面板真值也要跟着改：commit/stash 都拿 ui.st 整份落盘，
+             ui.st.length 停在旧档会把刚同步的帧数盖回去（20261117 尾段 16 秒）。 */
+          if (p.shots[p.idx] === s && ui.st) ui.st.length = frames[i];
+          /* 逐段落盘：只改内存的话，落盘通道只存当前段，其余段一刷新就被
+             后端旧 state 灌回，下次渲染登记又拿旧预设写回档案。 */
+          if (s.clip && ui.persistClipState) ui.persistClipState(s.clip, s.state);
           dirty = true;
         }
       }
@@ -494,6 +500,10 @@ export function installMonitor(ui) {
         : p.shots[i];
       if (s && s.state && s.state.length !== frames[i]) {
         s.state.length = frames[i];
+        /* 与 syncShotFrames 同修（20261117）：当前段同步 ui.st 防 commit/stash
+           旧档覆盖；逐段 persistClipState 落盘，别只留在内存里。 */
+        if (p.shots[p.idx] === s && ui.st) ui.st.length = frames[i];
+        if (s.clip && ui.persistClipState) ui.persistClipState(s.clip, s.state);
         dirty = true;
       }
     }

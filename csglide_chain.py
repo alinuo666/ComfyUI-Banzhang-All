@@ -1350,6 +1350,70 @@ def shrink_tail_to_audio(name, files=None):
     return out
 
 
+def align_frames_to_audio(name, seg_frames, files=None):
+    """排段时把音频范围内的段长统一到目标帧数 —— 「每段秒数」的唯一数据落点。
+
+    20261112 的合并只统一了控件语义：音频模式下改「时长」只写 segSec，没有任何
+    链路把它写进档案 frames；新段继承面板旧时长、已有段从不跟着改。面板时长比
+    每段秒数大时，前面的段把音频多吃掉一截，尾段实际剩余低于 0.05 秒或被吸到
+    净长≤0，变成无驱动空壳 —— 别的用户报「最后 1 秒的尾段被切掉去除」的根因
+    （20261117）。
+
+    与 shrink_tail_to_audio 同一套路：只走唯一写入口 _resize_one、不碰音频，
+    调用方在同一事务里紧接着重切；回传回读的真实帧数清单，前端必须拿它写齐
+    面板预设（20261109 事故红线）。音频范围外的段不动。
+    """
+    out = {"成功": True, "已改": 0, "帧数": [], "段序": []}
+    try:
+        seg_frames = snap_frames(int(seg_frames))
+        from .core import banzhang_audio_cut as _audio
+        files = [str(x).strip() for x in (files or []) if x]
+        if not files:
+            return out
+        max_src = 0.0
+        for rel in files:
+            try:
+                max_src = max(max_src, float(
+                    _audio.probe(_audio._input_path(rel)).get("时长秒") or 0))
+            except Exception:
+                continue
+        if max_src <= 0:
+            return out
+        fs = film_summary(name)
+        fps = float(fs.get("fps") or FRAME_FPS) or FRAME_FPS
+        total = int(round(max_src * fps))
+        # 改一段会让后面所有段的 clip_from 平移 —— 每改一段重读一次档案再往下
+        # 走，绝不能拿开头的旧坐标判「在不在音频范围内」。
+        i = 0
+        while True:
+            rows = [r for r in (fs.get("clips") or [])
+                    if str(r.get("id") or "").startswith("clip_")]
+            if i >= len(rows):
+                break
+            r = rows[i]
+            if int(r.get("clip_from") or 0) >= total:
+                break
+            cid = str(r.get("id") or "")
+            if int(r.get("frames") or 0) != seg_frames:
+                res = _resize_one(name, cid, seg_frames)
+                if res and res.get("changed"):
+                    out["已改"] += 1
+                    fs = film_summary(name)
+            i += 1
+        if out["已改"]:
+            with _film_memo_lock:
+                _film_memo.pop(str(name), None)
+        fs2 = film_summary(name) if out["已改"] else fs
+        rows2 = [x for x in (fs2.get("clips") or [])
+                 if str(x.get("id") or "").startswith("clip_")]
+        out["段序"] = [str(x.get("id") or "") for x in rows2]
+        out["帧数"] = [int(x.get("frames") or 0) for x in rows2]
+    except Exception as e:
+        out["错误"] = str(e)
+        print("[Banzhang] 段长对齐到每段秒数失败：%s" % e)
+    return out
+
+
 def _resync_audio_drivers(name, files=None):
     """段长落盘后，按**当前段档案**重切全部驱动音频。
 
