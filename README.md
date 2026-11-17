@@ -64,6 +64,16 @@ Note: model weights carry their own license — the MiniMax H3 Community License
 
 ## Changelog
 
+### 2026-11-17
+
+- New: **HD Reseed** — a five-in-one second-pass node: pixel upscale + video/audio VAE encode + AV concat + reference conditioning, with width/height/frames computed internally (no more hand-matching sizes between the condition side and the latent side).
+- Reworked to a pure img2img route: dropped CLIP / prompt refit / ref2video calls — second-pass stage time 4m14s → ~1m40s, and the 15 GB Qwen text encoder is no longer loaded.
+- Denoise 0.9 → 0.6 (adjustable: 0.3 = polish, 0.7+ = heavy redraw).
+- New nodes: HD reseed, Order Anchor, Sigma+LoRA combo, and compatibility aliases.
+- Refactor: 59 node modules moved into `nodes/` (one file per node) and 36 shared library modules into `core/`; the package root `__init__.py` now registers everything via `from .nodes import`.
+- Director Studio: asset lookup / reference-image reading / Media Rack slot merging now share one code path with the Image Studio; the "full film" output hands downstream video merging a disk path via comfy_api (no re-encode).
+- Video Tools: unified ffmpeg lookup (system PATH / bundled / auto-download cache) — no manual ffmpeg install needed.
+
 ### 2026-11-15
 
 - Fixed: RelayVSR nodes failing to register on setups without OpenCV (e.g. Comfy-Desktop). Optional third-party imports are now forbidden at module top level in the algorithm layer, enforced by a self-test gate.
@@ -168,6 +178,16 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 注意：模型权重有独立许可，MiniMax H3 Community License 含地域与营收门槛等限制，商用前请自行确认；`NOTICE.md` 所列第三方组件（尤其 `_h3mc/`，GPLv3）也不在可授权范围内，仍须遵守各自许可。
 
 ## 更新日志
+
+### 2026-11-17
+
+- 新增：**HD 重播种** —— 二采五合一节点：像素放大＋视频/音频 VAE 编码＋AV 拼接＋参考条件收进一个节点；宽/高/帧数内部统一计算，不再手抄条件端与潜空间端的尺寸。
+- 改为纯 img2img 路线：砍掉 CLIP／修复提示词／ref2video 调用——二采阶段耗时 4分14秒 → 约1分40秒，不再装载 15GB 的 Qwen 文本编码器。
+- 重绘幅度 0.9 → 0.6（可调：0.3 = 抛光，0.7 以上 = 大幅重画）。
+- 新增节点：HD 重播种、顺序锚、Sigma+LoRA 组合、兼容别名。
+- 重构：59 个节点模块归位 `nodes/`（一节点一文件），36 个共用库模块归位 `core/`；包根 `__init__.py` 统一 `from .nodes import` 注册。
+- 导演台：素材定位／参考图读取／媒体架槽位合并与 Qwen 编辑台共用同一份口径；「整片」输出口通过 comfy_api 把磁盘路径交给下游视频合并，不再重编码。
+- 视频工具：ffmpeg 查找统一（系统 PATH／插件自带／首次自动下载缓存），拿到插件包不用再自己装 ffmpeg。
 
 ### 2026-11-15
 
