@@ -46,16 +46,16 @@ SCHEMA_VERSION = 5
 ASSET_SUBFOLDER = "cglide"
 
 # 片级键值表（meta）里允许出现的键；chain 文档其余键也照存，这里只列默认值。
-# 20261111 阶段 2 / C：stage（一采 s1 / 二采 s2）与 film_variant
-# （三采成品 final / 二采原片 raw）都是片级真值，必须登记进白名单。
-# 漏登记时 save_chain_doc 会静默丢键 —— set_stage 返回「已切到二采」但库里
-# 还是一采，F5 之后按钮和后端直接对不上，属于最难查的「假成功」。
+# 20261117 方案甲(X)：stage（一采 s1 / 二采 s2 / 三采 s3）是片级真值，必须登记
+# 进白名单。漏登记时 save_chain_doc 会静默丢键 —— set_stage 返回「已切到三采」
+# 但库里还是一采，F5 之后按钮和后端直接对不上，属于最难查的「假成功」。
+# film_variant 变体轴已退役（三采独立归 s3），不再登记。
 _CHAIN_KEYS = ("name", "fps", "trim_frames", "prompt_global", "current",
-               "locked", "order", "transitions", "gen", "stage", "film_variant")
+               "locked", "order", "transitions", "gen", "stage")
 _CHAIN_DEFAULTS = {
     "name": "", "fps": 24, "trim_frames": 22, "prompt_global": "",
     "current": None, "locked": False, "order": [], "transitions": {},
-    "gen": 0, "stage": "s1", "film_variant": "raw",
+    "gen": 0, "stage": "s1",
 }
 # clip 文档里被抽成 shots 标量列的键（其余一律进 meta_json，绝不丢字段）。
 _SHOT_SCALARS = {
@@ -994,10 +994,10 @@ def save_chain_doc(d, name, data):
                     continue
                 if k in data:
                     items.append((k, data.get(k)))
-                elif k in ("stage", "film_variant"):
-                    # 阶段 / 变体都是整片级开关：调用方只改 current / order 时
-                    # 传进来的 doc 往往不带它们，按默认值覆盖会把用户选的二采、
-                    # 「用二采原片」冲掉。没显式给就保留库里现有的值。
+                elif k == "stage":
+                    # 阶段是整片级开关：调用方只改 current / order 时传进来的
+                    # doc 往往不带它，按默认值覆盖会把用户选的二采/三采冲掉。
+                    # 没显式给就保留库里现有的值。
                     row = conn.execute(
                         "SELECT value FROM meta WHERE key=?", (k,)).fetchone()
                     _def = _CHAIN_DEFAULTS.get(k)

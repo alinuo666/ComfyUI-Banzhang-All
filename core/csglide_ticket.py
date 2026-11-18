@@ -206,47 +206,73 @@ def ticket_from_prompt(prompt, node_id=None):
 # 阶段判定（20261111 阶段 1）
 # ==============================================================================
 
-# 「二采」的结构性定义：这一路的 latent 经过过「🎬 H3 终极放大」的放大重采样。
-# 三采 RelayVSR 是像素域超分、不接 latent 到解码，天然不进这个判定。
+# 阶段的结构性定义：这份 latent 一共经过几个「🎬 H3 终极放大」的放大重采样。
+#   0 个 → s1（一采）；1 个 → s2（二采）；≥2 个 → s3（三采-latent，复用终极放大）。
+# 三采 RelayVSR 是像素域超分、不接 latent 到解码，天然不进这个判定（它的 s3
+# 由收片方 _declare_film_identity 认出 RelayVSR 自报）。
 UPSCALE_TYPES = ("BanZhang_MMH3_Upscale",)
+
+# 导演台各输出口「本身已是第几采」（用放大个数表示的基阶段）。
+# 单阶段提交时上游历史在导演台读档口被截断，纯数可见放大个数会少算 —— 读档口
+# 携带的基阶段补回被截断的那部分。口号按 RETURN_TYPES 序号（csglide_cast.py）：
+#   3 潜空间（活一采输出，放大前）→ 0；7 整片潜空间 → 0（沿用旧纯计数行为）；
+#   9 本段一采潜空间 → 0；10 本段二采潜空间 → 1（这份档本身已二采）；
+#   11 本段二采视频 → 1（P3 视频口超分读档口，VIDEO 喂 RelayVSR，登记只为判据自洽，
+#   与前端 bz_stage_decode.js CAST_PORT_BASE 逐字同源）。
+# 未列出的口（含旧版导演台）默认 0，等价于旧的纯计数，无回归。
+CAST_PORT_BASE = {3: 0, 7: 0, 9: 0, 10: 1, 11: 1}
 
 
 def decode_stage(prompt, node_id, max_hops=16):
-    """从本节点的 latent 输入向上回溯，判定它属于一采(s1)还是二采(s2)。
+    """从本节点的 latent 输入向上回溯，判 s1/s2/s3。
 
-    上游链路里出现「🎬 H3 终极放大」→ s2；否则 → s1。
-
-    为什么按「有没有放大节点」判，而不是按节点编号 / 命名 / 连线深度：
-      · 节点编号只在这张画布的运行期可靠，换工作流就变；
-      · 命名可以随便改，深度会被中间串的透传节点顶偏；
-      · 只有「这份 latent 有没有被放大重采样过」是数据本身的属性，
-        插多少个中间节点都改不了它。
+    判据＝**导演台读档口携带的基阶段** ＋ **上游可见的终极放大个数**：
+      · 为什么按「有几个放大节点」而不是编号/命名/深度/首个命中：编号换工作流就变、
+        命名可改、深度被透传节点顶偏；三采-latent 复用同一个放大类，链上串两个放大，
+        旧版「首个命中即返 s2」会把三采误判成二采。只有「被放大重采样过几次」是
+        数据本身的属性，插多少中间节点都改不了它。
+      · 为什么要加基阶段：单阶段提交（只跑二采/只跑三采）时，下游接的是导演台
+        「本段一采/二采潜空间」读档口，上游历史在口上被截断、可见放大只剩本次那一个。
+        读档口本身是第几采（CAST_PORT_BASE）补回被截断的部分：接二采档＋1 个可见
+        放大 → 1+1=2 → s3，不再误判 s2。全程提交（活链完整）基阶段为 0、数得到全部
+        放大，结果与旧版一致。
 
     解码节点、存档节点都能用：两者拿到的都是同一条 latent 链。
     """
     graph = prompt if isinstance(prompt, dict) else {}
     me = str(node_id)
     spec = graph.get(me) or {}
-    seen, frontier = set(), []
+    seen = set()
+    # frontier 携带 (节点 id, 连线用的输出口序号)：序号用来在碰到导演台时取基阶段。
+    frontier = []
     for value in (spec.get("inputs") or {}).values():
         if isinstance(value, (list, tuple)) and len(value) == 2:
-            frontier.append(str(value[0]))
+            frontier.append((str(value[0]), value[1]))
+    upscales = set()
+    base = 0
     for _ in range(max_hops):
         if not frontier:
             break
         nxt = []
-        for nid in frontier:
+        for nid, out_idx in frontier:
             if nid in seen or nid == me:
                 continue
             seen.add(nid)
             up = graph.get(nid) or {}
             cls = str(up.get("class_type") or "")
             if cls in UPSCALE_TYPES:
-                return "s2"
+                upscales.add(nid)   # 记数但继续往上：三采要数到第二个放大
             if cls in CAST_TYPES:
-                continue          # 导演台是 latent 的源头，不必再往上
+                # 导演台是 latent 源头：按输出口序号取基阶段，不必再往上。
+                base = max(base, CAST_PORT_BASE.get(out_idx, 0))
+                continue
             for value in (up.get("inputs") or {}).values():
                 if isinstance(value, (list, tuple)) and len(value) == 2:
-                    nxt.append(str(value[0]))
+                    nxt.append((str(value[0]), value[1]))
         frontier = nxt
+    n = base + len(upscales)
+    if n >= 2:
+        return "s3"
+    if n == 1:
+        return "s2"
     return "s1"

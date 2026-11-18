@@ -1,0 +1,276 @@
+{
+  "1": {
+    "inputs": { "vae_name": "minimax_h3_audio_vae_fp32.safetensors" },
+    "class_type": "VAELoader",
+    "_meta": { "title": "音频VAE" }
+  },
+  "6": {
+    "inputs": { "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors" },
+    "class_type": "VAELoader",
+    "_meta": { "title": "视频VAE" }
+  },
+  "16": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3-w4a8_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "加载CLIP" }
+  },
+  "17": {
+    "inputs": {
+      "rack_data": "{\"slots\":{\"images\":[{\"file\":\"武士.jpg\",\"alias\":[\"参考图\"]}],\"videos\":[],\"audios\":[]},\"fps\":0,\"audio_out\":0,\"segs\":{},\"cur\":\"clip_0001\"}"
+    },
+    "class_type": "CSGlideH3MediaRackCS",
+    "_meta": { "title": "🗂️ H3 媒体架 (H3 Media Rack)" }
+  },
+  "18": {
+    "inputs": {
+      "unet_name": "MiniMax-H3\\minimax_h3_hybrid_fl2va_ref2va_b25-49.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": { "title": "UNet加载器" }
+  },
+  "65": {
+    "inputs": { "预留容量_GB": 0.6, "🔣 任意输入": ["18", 0] },
+    "class_type": "BanZhang_VRAM_Guard",
+    "_meta": { "title": "🛡️⚡ 显存守卫" }
+  },
+  "11": {
+    "inputs": { "attention": "comfy kitchen attention", "model": ["65", 0] },
+    "class_type": "ModelAttentionBackend",
+    "_meta": { "title": "模型注意力后端" }
+  },
+  "12": {
+    "inputs": { "shift_video": 12, "shift_audio": 3, "model": ["11", 0] },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": { "title": "MiniMax H3 Sigma Shift" }
+  },
+  "32": {
+    "inputs": {
+      "LoRA配置": "[{\"on\":true,\"file\":\"MiniMax-H3/4步电影高清化-v10.safetensors\",\"strength\":1,\"note\":\"\"}]",
+      "模型强度": "",
+      "模型": ["12", 0]
+    },
+    "class_type": "BanZhang_LoRA_VramSafe",
+    "_meta": { "title": "🛡️ 多 LoRA 管理器 (实时融合)" }
+  },
+  "36": {
+    "inputs": {
+      "分段步数": "2,2",
+      "级间倍率": "2",
+      "latent放大模型": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+      "放大后卸载": true,
+      "满分辨率分块": "关（整幅收尾）",
+      "伪影修正比例": 0,
+      "模型": ["32", 0]
+    },
+    "class_type": "BanZhang_SelfLiftMultiStage",
+    "_meta": { "title": "🎯 SelfLift 多级渐进" }
+  },
+  "cast": {
+    "inputs": {
+      "h3_data": "{\"mode\":\"ref2va\",\"width\":928,\"height\":544,\"ratio\":\"16:9\",\"length\":360,\"pin_head\":0,\"pin_tail\":0,\"ref_image_size\":\"match\",\"ref_video_size\":768,\"ref_video_fps\":24,\"ref_scale_hd\":1,\"pace\":2.5,\"prompt\":\"\",\"slots\":{\"first\":{},\"last\":{},\"images\":[{}],\"videos\":[],\"audios\":[]},\"cont\":{\"mode\":\"latent\"},\"chain\":{\"name\":\"甲方案演示工程\",\"clip\":\"clip_0001\",\"shot\":\"jia0001\"}}",
+      "model": ["36", 0],
+      "clip": ["16", 0],
+      "vae": ["6", 0],
+      "audio_vae": ["1", 0],
+      "refs": ["17", 0]
+    },
+    "class_type": "CSGlideCastCS",
+    "_meta": { "title": "🎞️ H3 导演台 (H3 Studio)" }
+  },
+  "zero": {
+    "inputs": { "conditioning": ["cast", 1] },
+    "class_type": "ConditioningZeroOut",
+    "_meta": { "title": "条件零化（负面）" }
+  },
+
+  "s1_sampler": {
+    "inputs": {
+      "seed": 9,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "denoise": 1,
+      "model": ["cast", 0],
+      "positive": ["cast", 1],
+      "negative": ["zero", 0],
+      "latent_image": ["cast", 3]
+    },
+    "class_type": "KSampler",
+    "_meta": { "title": "① 一采采样器" }
+  },
+  "s1_decode": {
+    "inputs": {
+      "vae": ["6", 0],
+      "潜空间": ["s1_sampler", 0],
+      "时间分块": "开",
+      "帧流模式": "关"
+    },
+    "class_type": "BanZhang_H3VAEDecodeFast",
+    "_meta": { "title": "① 🎬 H3 VAE 快速解码（一采）" }
+  },
+  "s1_audio": {
+    "inputs": { "samples": ["s1_sampler", 0], "vae": ["1", 0] },
+    "class_type": "VAEDecodeAudio",
+    "_meta": { "title": "① 音频解码（一采）" }
+  },
+  "M1": {
+    "inputs": {
+      "⏱️ 帧率": 24,
+      "📼 视频格式": "MP4 (H264/通用)",
+      "🏷️ 文件前缀": "一采",
+      "💾 保存元数据": true,
+      "🔀 输出模式": "自动",
+      "🔔 提示音文件": "🔇 不播放提示音",
+      "🧹 出片后自动净化": true,
+      "📂 自定义保存路径": "",
+      "painter_preview": "",
+      "🖼️ 图像": ["s1_decode", 0],
+      "🎵 音频": ["s1_audio", 0]
+    },
+    "class_type": "banzhangVideoCombine",
+    "_meta": { "title": "① 🎥 视频合并（一采出口）" }
+  },
+
+  "s2_up": {
+    "inputs": {
+      "模型": ["cast", 0],
+      "条件": ["cast", 2],
+      "潜空间": ["s1_sampler", 0],
+      "lora_file": "🚫 关闭",
+      "lora_strength": 1.0,
+      "随机种子": 0,
+      "采样器": "euler",
+      "调度器": "simple",
+      "步数": 1,
+      "去噪强度": 0.2
+    },
+    "class_type": "BanZhang_MMH3_Upscale",
+    "_meta": { "title": "② H3 终极放大（二采）" }
+  },
+  "s2_decode": {
+    "inputs": {
+      "vae": ["6", 0],
+      "潜空间": ["s2_up", 0],
+      "时间分块": "开",
+      "帧流模式": "关"
+    },
+    "class_type": "BanZhang_H3VAEDecodeFast",
+    "_meta": { "title": "② 🎬 H3 VAE 快速解码（二采）" }
+  },
+  "s2_audio": {
+    "inputs": { "samples": ["s2_up", 0], "vae": ["1", 0] },
+    "class_type": "VAEDecodeAudio",
+    "_meta": { "title": "② 音频解码（二采）" }
+  },
+  "M2": {
+    "inputs": {
+      "⏱️ 帧率": 24,
+      "📼 视频格式": "MP4 (H264/通用)",
+      "🏷️ 文件前缀": "二采",
+      "💾 保存元数据": true,
+      "🔀 输出模式": "自动",
+      "🔔 提示音文件": "🔇 不播放提示音",
+      "🧹 出片后自动净化": true,
+      "📂 自定义保存路径": "",
+      "painter_preview": "",
+      "🖼️ 图像": ["s2_decode", 0],
+      "🎵 音频": ["s2_audio", 0]
+    },
+    "class_type": "banzhangVideoCombine",
+    "_meta": { "title": "② 🎥 视频合并（二采出口）" }
+  },
+
+  "relay_loader": {
+    "inputs": {
+      "权重包": "（未找到 RelayVSR 权重）",
+      "精度": "bf16（推荐）",
+      "加速": true
+    },
+    "class_type": "BanZhangRelayVSRLoader",
+    "_meta": { "title": "③-V RelayVSR 模型加载" }
+  },
+  "s3_relay": {
+    "inputs": {
+      "模型": ["relay_loader", 0],
+      "放大倍率": 2,
+      "时间块帧数": 24,
+      "空间分块": "3×3（推荐，8G 卡）",
+      "编码器": "h264",
+      "帧率": 24.0,
+      "视频": ["M2", 1]
+    },
+    "class_type": "BanZhangRelayVSRStreaming",
+    "_meta": { "title": "③-V RelayVSR 视频口超分（三采）" }
+  },
+  "M3V": {
+    "inputs": {
+      "⏱️ 帧率": 24,
+      "📼 视频格式": "MP4 (H264/通用)",
+      "🏷️ 文件前缀": "三采",
+      "💾 保存元数据": true,
+      "🔀 输出模式": "自动",
+      "🔔 提示音文件": "🔇 不播放提示音",
+      "🧹 出片后自动净化": true,
+      "📂 自定义保存路径": "",
+      "painter_preview": "",
+      "🎬 视频文件": ["s3_relay", 0]
+    },
+    "class_type": "banzhangVideoCombine",
+    "_meta": { "title": "③-V 🎥 视频合并（三采·视频口超分出口）" }
+  },
+
+  "s3_up": {
+    "inputs": {
+      "模型": ["cast", 0],
+      "条件": ["cast", 2],
+      "潜空间": ["s2_up", 0],
+      "lora_file": "🚫 关闭",
+      "lora_strength": 1.0,
+      "随机种子": 0,
+      "采样器": "euler",
+      "调度器": "simple",
+      "步数": 1,
+      "去噪强度": 0.2
+    },
+    "class_type": "BanZhang_MMH3_Upscale",
+    "_meta": { "title": "③-L H3 终极放大（三采·潜空间）" }
+  },
+  "s3_decode": {
+    "inputs": {
+      "vae": ["6", 0],
+      "潜空间": ["s3_up", 0],
+      "时间分块": "开",
+      "帧流模式": "关"
+    },
+    "class_type": "BanZhang_H3VAEDecodeFast",
+    "_meta": { "title": "③-L 🎬 H3 VAE 快速解码（三采·潜空间）" }
+  },
+  "s3_audio": {
+    "inputs": { "samples": ["s3_up", 0], "vae": ["1", 0] },
+    "class_type": "VAEDecodeAudio",
+    "_meta": { "title": "③-L 音频解码（三采·潜空间）" }
+  },
+  "M3L": {
+    "inputs": {
+      "⏱️ 帧率": 24,
+      "📼 视频格式": "MP4 (H264/通用)",
+      "🏷️ 文件前缀": "三采潜空间",
+      "💾 保存元数据": true,
+      "🔀 输出模式": "自动",
+      "🔔 提示音文件": "🔇 不播放提示音",
+      "🧹 出片后自动净化": true,
+      "📂 自定义保存路径": "",
+      "painter_preview": "",
+      "🖼️ 图像": ["s3_decode", 0],
+      "🎵 音频": ["s3_audio", 0]
+    },
+    "class_type": "banzhangVideoCombine",
+    "_meta": { "title": "③-L 🎥 视频合并（三采·潜空间出口）" }
+  }
+}

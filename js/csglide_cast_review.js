@@ -125,7 +125,8 @@ export function installReview(ui) {
     /* 20261111 阶段 2：导出阶段可见但不打断。只走底部反馈条，不进 notes ——
        notes 非空就会弹三选一，本来没问题的导出会被硬塞一个对话框。 */
     if (plan.stage) {
-      ui.lanesFlash(`当前时间轴阶段「${plan.stage === "s2" ? "二采" : "一采"}」`
+      const stageCn = { s1: "一采", s2: "二采", s3: "三采" }[plan.stage] || "一采";
+      ui.lanesFlash(`当前时间轴阶段「${stageCn}」`
         + `（${plan.stage}）· ` + (plan.film_stage_warning || ""));
     }
     let notes = plan.ok ? exportNotes(plan) : [];
@@ -293,9 +294,7 @@ export function installReview(ui) {
       /* 20261111 阶段 2：标题上点名当前阶段。只改文案，不动 notes ——
          notes 决定要不要弹这个三选一，把阶段塞进去等于凭空多一次打断。 */
       const stageTag = plan.stage
-        ? ` · ${plan.stage === "s2" ? "二采" : "一采"}(${plan.stage})`
-          + (plan.stage === "s2" && plan.variant_label
-             ? ` · ${plan.variant_label}` : "")
+        ? ` · ${{ s1: "一采", s2: "二采", s3: "三采" }[plan.stage] || "一采"}(${plan.stage})`
         : "";
       sheet.append(el("h3", null, (ready
         ? `${verb}到第 ${plan.at_index} 段为止`

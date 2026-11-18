@@ -429,7 +429,8 @@ class BanZhangH3VAEDecodeFast:
 
         # ── 续拍存档（20261111 阶段 1）──
         # 放在解码之前：latent 已经是最终产物，存档不该依赖解码是否成功；
-        # 阶段由 latent 上游有没有「🎬 H3 终极放大」自动判定，用户无需设置。
+        # 阶段由 latent 上游「🎬 H3 终极放大」个数自动判定（0/1/≥2 → s1/s2/s3），
+        # 用户无需设置。
         _archive_latent(潜空间, kwargs.get("prompt"), kwargs.get("unique_id"))
 
         # ── 空间分块几何固定为官方 256/64，不开放调节 ──

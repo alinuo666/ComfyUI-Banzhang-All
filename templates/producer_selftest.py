@@ -23,7 +23,9 @@ _spec = importlib.util.spec_from_file_location(
 _pkg = importlib.util.module_from_spec(_spec)
 sys.modules["banzhang_pkg"] = _pkg
 _spec.loader.exec_module(_pkg)
-import banzhang_producer as P  # noqa: E402
+# 2026-11-14 nodes/ 归位后 banzhang_producer 移入 nodes/，不再是顶层模块；
+# 从已加载的包内子模块取，相对导入（from .. import csglide_chain）上下文才正确。
+P = importlib.import_module("banzhang_pkg.nodes.banzhang_producer")  # noqa: E402
 
 PASS, FAIL = 0, 0
 

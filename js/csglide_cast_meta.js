@@ -180,21 +180,16 @@ export function installMeta(ui) {
      前拦下：提示词引用了音频、或视频槽位勾了音轨，而 audio_vae 没接线，直接
      报清楚缺什么、怎么补。判定只看「有没有连线」，不猜模型对不对。
 
-     第三条判据「音频槽位摆了素材」是 20261021 补的：后端
-     _filter_refs_by_prompt 对 audios 是**无条件发送**——它是代码里的显式例外，
-     不看提示词（csglide_cast.py:1210-1217，官方 MiniMaxH3ReferenceToVideo 对
-     ref_audios 同样无条件发送）。于是只要槽位里摆了音频，后端就一定会走到
-     _encode_ref_audio，audio_vae 为 None 时抛异常中断。
-     原先这里只查提示词与视频音轨勾选，于是「摆了音频 + 提示词没写 @音频N」
-     这个组合前端放行进队、后端跑一半炸掉，用户看到的是「音频不生效」。
-     三条判据必须与后端真正会走到 _encode_ref_audio 的三条路一一对应，
-     少一条就是一条漏网的中断。 */
+     20261117 起音频改回严格按需（与图片/视频同口径，引用哪条送哪条），
+     原先第三条判据「音频槽位摆了素材」随之删除——摆了没引用不会走到
+     _encode_ref_audio，再拦就是误拦。effPrompt() 已按素材表展开别名，
+     用角色名引用音频的也能被 @音频N 正则扫到。两条判据与后端真正会走到
+     _encode_ref_audio 的两条路一一对应。 */
   function audioVaeMissing() {
     const slots = mergedSlots();
     const inPrompt = /@音频\d+/.test(ui.effPrompt());
-    const hasAudioSlot = (slots.audios || []).some((s) => s && s.file);
     const hasVideoTrack = (slots.videos || []).some((s) => s && s.file && s.audio);
-    if (!(inPrompt || hasAudioSlot || hasVideoTrack)) return null;
+    if (!(inPrompt || hasVideoTrack)) return null;
     const inp = (ui.node.inputs || []).find(
       (s) => s && (s.name === "audio_vae" || s.localized_name === "audio_vae")
              && s.type === "VAE");
@@ -202,9 +197,7 @@ export function installMeta(ui) {
     return {
       why: inPrompt
         ? "提示词引用了 @音频N"
-        : hasAudioSlot
-          ? "音频槽位摆了素材（音频无条件发送，不写 @音频N 也会送）"
-          : "视频槽位勾了「同时把其音轨作为音频参考」",
+        : "视频槽位勾了「同时把其音轨作为音频参考」",
     };
   }
 

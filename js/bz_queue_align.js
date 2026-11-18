@@ -33,6 +33,9 @@ import { projectStore } from "./bz_project_store.js";
 import { promptBuild, lineOf } from "./bz_prompt_build.js";
 import { noteCompile } from "./bz_audit.js";
 import { verifySingleSource } from "./bz_single_source.js";
+import { applyStageScope, DEFAULT_RUN_MODE, DEFAULT_S3_MODE } from "./bz_stage_orchestrator.js";
+import { applyGroupScope } from "./bz_group_orchestrator.js";
+import { enabledStages } from "./bz_stage_flow.js";
 
 const CAST = "CSGlideCastCS";
 let patched = false;
@@ -186,6 +189,64 @@ function install() {
     if (typeof window !== "undefined" && window.__bzSkipQueueAlign) {
       console.log("[班长] 推送整片潜空间：跳过画布运行对齐（h3_data 由按钮自己打好）");
       return orig(number, workflow, ...rest);
+    }
+    /* 阶段编排（20261117 方案甲 P2c/P3）——
+       刻意放在 isGloballyRendering 放行**之前**：单跑与「全部渲染」批跑的每一段
+       都经过这里，两条路径同一口径。按运行模式下拉（ui.runMode）+ 时间轴当前阶段
+       （ui.stage）+ 三采方式钮（ui.s3Mode）裁出本次要跑的出片口集合，写进
+       partialExecutionTargets（原始 api 读的就是这个键，不是上层 app 服务的
+       queueNodeIds）；跨采活线在上游出范围时改接导演台读档口（潜空间 9/10、
+       视频口超分 11=本段二采视频）。默认「全程」+ 单条三采子图返回 null = 不裁不改，
+       与旧行为完全一致。编排失败绝不拦用户手点的运行，退回全程提交。 */
+    try {
+      if (hasCastIn(workflow)) {
+        const cnode = castNodeOf();
+        const cui = cnode && cnode.h3ui;
+        /* 组模式：导演台已从画布组解析出阶段 DAG，走不依赖类名的新编排 */
+        const groupDetected = cnode && cnode.bzStageDetected;
+        if (groupDetected && groupDetected.mode === "group") {
+          const enabled = enabledStages(cnode).map((s) => s.id);
+          const gscoped = applyGroupScope(workflow.output, groupDetected, enabled, cnode.id);
+          workflow.output = gscoped.output;
+          if (gscoped.partialExecutionTargets) {
+            rest[0] = { ...(rest[0] || {}),
+              partialExecutionTargets: gscoped.partialExecutionTargets };
+          }
+          console.log("[班长·组编排] 启用=" + enabled.join("/")
+            + (gscoped.partialExecutionTargets
+              ? " 出片口=" + gscoped.partialExecutionTargets.join(",") : " (整图)")
+            + (gscoped.rewired.length
+              ? " 改接线=" + gscoped.rewired.map((r) => "#" + r.node + "←总线口" + r.port).join(",")
+              : ""));
+        } else {
+        /* 无组旧图走旧阶段编排：范围来自 ui.runMode / ui.stage / ui.s3Mode。
+           遥控节点已于 20261118 注销，运行范围统一由导演台拓扑区表达；
+           有组时上面组分支已接管，这里只服务没有画布组的旧工作流。 */
+        const mode = (cui && cui.runMode) || DEFAULT_RUN_MODE;
+        const stage = (cui && cui.stage) || "s1";
+        const s3Mode = (cui && cui.s3Mode) || DEFAULT_S3_MODE;
+        const scoped = applyStageScope(workflow.output, mode, stage, s3Mode);
+        if (scoped.s3Fallback) {
+          console.warn("[班长·阶段编排] 三采方式钮选「" + s3Mode
+            + "」但画布上没有对应子图 —— 已按画布实际接的那条三采子图跑（不拦运行）。");
+        }
+        if (scoped.partialExecutionTargets || (scoped.rewired && scoped.rewired.length)) {
+          workflow.output = scoped.output;
+          if (scoped.partialExecutionTargets) {
+            rest[0] = { ...(rest[0] || {}), partialExecutionTargets: scoped.partialExecutionTargets };
+          }
+          console.log("[班长·阶段编排] 模式=" + mode + " 当前阶段=" + stage
+            + " 三采方式=" + scoped.s3Mode
+            + " 跑=" + scoped.targets.join("/")
+            + " 出片口=" + (scoped.selected.length ? scoped.selected.join(",") : "(整图)")
+            + (scoped.rewired.length
+              ? " 改接线=" + scoped.rewired.map((r) => "#" + r.node + "←" + (r.port === "live" ? "二采实时口" : "读档口" + r.port)).join(",")
+              : ""));
+        }
+        }
+      }
+    } catch (e) {
+      console.warn("[班长] 阶段编排失败，已按全程提交：", e);
     }
     try {
       /* 「全部渲染」的循环里已经 flush + applyToPrompt 过了，它提交的每一段

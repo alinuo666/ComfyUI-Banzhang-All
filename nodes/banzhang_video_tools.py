@@ -1194,15 +1194,14 @@ def _declare_film_identity(prompt, node_id):
     20261111 阶段 1：💾 续接存档已并入 🎬 H3 VAE 快速解码、画布不再放存档节点，
     「收哪一采」改由**阶段**裁决。所以这里自报两件事：
       · bz_role —— 我这张画面是不是直接从 VAE 解码来的；
-      · bz_stage —— 这一路解码的 latent 上游有没有「🎬 H3 终极放大」：
-        有 = s2 二采，没有 = s1 一采。判据与写盘方共用
+      · bz_stage —— 这一路解码的 latent 上游有几个「🎬 H3 终极放大」：
+        0 = s1 一采，1 = s2 二采，≥2 = s3 三采-latent。判据与写盘方共用
         csglide_ticket.decode_stage()，两边绝不会各猜一套。
         收片端按时间轴当前选中阶段筛。
 
-    20261111 阶段 C（Q7=C）：再自报一件事 —— bz_variant。链上出现 RelayVSR
-    节点就是「三采最终成品」(final)，否则是「二采原片」(raw)。判据只认节点
-    类型、不认节点编号，换工作流照样生效；三采是像素域超分、只可能接在二采
-    之后，所以阶段直接判 s2，不再往上游猜。
+    20261117 方案甲(X)：三采升为独立阶段 s3。链上出现 RelayVSR（像素域超分）
+    就是三采视频成品，直接判 s3；退役 raw/final 变体（bz_variant 不再自报），
+    三采成品无论潜空间放大还是视频超分都归 s3，切「三采」按钮即取这一份。
     """
     graph = prompt if isinstance(prompt, dict) else {}
 
@@ -1282,25 +1281,21 @@ def _declare_film_identity(prompt, node_id):
         role = "segment"
         why = "上游 #%s 是 RelayVSR 三采超分（三采成品）" % vsr_nodes[0]
 
-    # ---- 阶段：从这一路的解码节点回溯，判一采/二采 ----
+    # ---- 阶段：从这一路的解码节点回溯，判一采/二采/三采 ----
     # 与写盘方（VAE 快速解码 → banzhang_h3mc_archive）共用同一个函数，
     # 避免「存的是 s2、收片认成 s1」这种最难查的错。
-    variant = "final" if vsr_nodes else "raw"
-    variant_why = ("上游 #%s 是 RelayVSR 三采超分 → 三采最终成品" % vsr_nodes[0]
-                   if vsr_nodes else "链上没有 RelayVSR → 原生采样成片")
     stage, stage_why = "s1", ""
     if vsr_nodes:
-        # 三采是像素域超分，只可能接在二采之后；即使中间隔着二采的合并节点
-        # 没摸到 VAE 解码，阶段也只能是 s2，不猜、不往上追。
-        stage, stage_why = "s2", "三采 RelayVSR 只接在二采之后 → s2"
+        # 三采 RelayVSR 是像素域超分，成品独立归 s3（方案甲 X）；即使中间隔着
+        # 二采的合并节点没摸到 VAE 解码，也直接判 s3，不猜、不往上追。
+        stage, stage_why = "s3", "上游 #%s 是 RelayVSR 三采超分 → s3" % vsr_nodes[0]
     elif role == "segment" and decodes:
         try:
             from ..core.csglide_ticket import decode_stage
         except ImportError:
             from ..core.csglide_ticket import decode_stage
         stage = decode_stage(graph, decodes[0])
-        stage_why = "解码 #%s 的 latent 上游%s「🎬 H3 终极放大」→ %s" % (
-            decodes[0], "有" if stage == "s2" else "没有", stage)
+        stage_why = "解码 #%s 的 latent 上游终极放大个数判定 → %s" % (decodes[0], stage)
     elif role != "segment":
         stage_why = "不是分段片，不判阶段"
 
@@ -1311,7 +1306,6 @@ def _declare_film_identity(prompt, node_id):
     # 日志与结果面板的旧列不出错；收片端已改用 bz_stage。
     return {"bz_name": name, "bz_cid": cid, "bz_role": role, "bz_why": why,
             "bz_stage": stage, "bz_stage_why": stage_why,
-            "bz_variant": variant, "bz_variant_why": variant_why,
             "bz_arch": "", "bz_arch_on": False,
             "bz_arch_why": "存档节点已并入 VAE 快速解码，改按阶段认片"}
 
@@ -1712,6 +1706,17 @@ class banzhangVideoCombine:
         if not self._本节点已接线(kwargs.get("prompt"), kwargs.get("unique_id")) \
                 and not self._有下游消费(kwargs.get("prompt"), kwargs.get("unique_id")):
             print("⏭️ [视频合并] 未接线且无下游 → 跳过（不报错，不影响本轮其他节点）")
+            return {"ui": {}, "result": (None, None, None)}
+        # 20261117 方案甲：接线了、但图像/视频/帧流三个媒体口值全是 None —— 上游
+        # 缺档或宽容跳过（如三采「本段二采视频」读档口尚无成片返回 None，RelayVSR
+        # 跳过返回 None 视频）。这是读档口哲学下的合法状态，不是用户接错线：消费口
+        # 须与产出端同口径宽容跳过，否则 _combine_impl 会按值硬报错把整轮打断。
+        # 用「已接线」闸住：只接输出不接输入的误接仍走主流程报错，不静默吞。
+        if self._本节点已接线(kwargs.get("prompt"), kwargs.get("unique_id")) \
+                and all(kwargs.get(k) is None for k in ("🖼️ 图像", "🎬 视频文件", "🎞️ 帧流")):
+            print("⚠️ [视频合并] 已接线但图像/视频/帧流全为空 → 跳过本轮收片，不报错。"
+                  "通常是上游缺档或跳过（如本段尚无二采成片，三采读档口返回空）；"
+                  "若并非预期，请检查媒体输入接线。")
             return {"ui": {}, "result": (None, None, None)}
         try:
             ret = self._combine_impl(**kwargs)

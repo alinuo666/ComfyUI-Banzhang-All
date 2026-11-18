@@ -17,7 +17,13 @@ for p in (COMFY_ROOT, PKG_ROOT):
 import importlib  # noqa: E402
 import types  # noqa: E402
 import importlib.util  # noqa: E402
-import nodes as core_nodes  # noqa: E402
+
+# 2026-11-14 nodes/ 归位后，包内 nodes/ 成了真实包，会遮蔽 ComfyUI 核心 nodes.py，
+# 直接 import nodes 拿到的是空包（无 NODE_CLASS_MAPPINGS）。按文件路径显式加载核心模块。
+_cn_spec = importlib.util.spec_from_file_location(
+    "comfy_core_nodes", os.path.join(COMFY_ROOT, "nodes.py"))
+core_nodes = importlib.util.module_from_spec(_cn_spec)
+_cn_spec.loader.exec_module(core_nodes)
 
 REG = {}
 REG.update(core_nodes.NODE_CLASS_MAPPINGS)

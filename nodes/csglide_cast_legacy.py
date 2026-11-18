@@ -1077,25 +1077,15 @@ def _filter_refs_by_prompt(cfg):
     # 数组」还是「空数组」对下游等价（都数不出素材），但两边必须同构，
     # 否则以后任一侧加了「按空位补提示」之类的逻辑就会瞬间对不上。
     #
-    # 例外：独立音频不参与按需过滤。官方 MiniMaxH3ReferenceToVideo 对 ref_audios
-    # 是无条件发送的（不看提示词），导演台原先也过滤，于是「摆好了音频、提示词
-    # 没写 @音频N」就静默丢弃——用户只看到音频没生效，查不出原因。
-    # 音频是「配乐/音色」这类整体氛围参考，本来就不一定在剧本里被逐句提到，
-    # 按需过滤对它没有省显存的意义（音频 token 占比极小），却极易误伤。
-    # 音频仍受 MAX_AUDIOS 上限约束，超出的按编号取前 N 个。
+    # 音频与图片/视频同口径，严格按 @音频N 引用发送（20261117 改回，
+    # 与现行版 csglide_cast._filter_refs_by_prompt 同步）：无条件发送会让
+    # 架上多条声音参考一起进模型，人物声音错乱/串音。「摆了没引用」由
+    # 调用处的显式 ⚠ 提示兜底，不再静默。
     any_keep = any(keep.values())
     kept = {}
     for kind, idxs in keep.items():
         arr = cfg.get(kind)
         if not isinstance(arr, list):
-            continue
-        if kind == "audios":
-            all_idx = set(i for i in range(len(arr)) if arr[i])
-            if len(all_idx) > caps["audios"]:
-                all_idx = set(sorted(all_idx)[:caps["audios"]])
-            kept[kind] = sorted(i + 1 for i in all_idx)
-            cfg[kind] = [arr[i] if i in all_idx else None
-                         for i in range(len(arr))]
             continue
         kept[kind] = (sorted(i + 1 for i in idxs if i < len(arr) and arr[i])
                       if any_keep else [])
@@ -1794,6 +1784,7 @@ class CSGlideCast:
                 "生效。要按首尾帧约束，请把模式切到「首/尾帧」（并加载 "
                 "minimax_h3_fl2va 开头的权重）。")
 
+        audio_filled = sum(1 for x in (cfg.get("audios") or []) if x)
         kept, over = _filter_refs_by_prompt(cfg)
 
         def _known(fmt, base, arr, used):
@@ -1822,6 +1813,12 @@ class CSGlideCast:
                     "其余已从提示词移除" % (label[k], n, cap, cap))
         else:
             log("【参考素材】提示词未引用任何 @标签，本次不送参考")
+        # 音频严格按需（20261117）：「摆了没引用」显式提示，不静默丢弃。
+        audio_idle = audio_filled - len(kept.get("audios") or [])
+        if audio_idle > 0:
+            log("【参考素材】⚠ 架上有 %d 条音频没被 @音频N 引用，本次不送——"
+                "音频与图片/视频同口径，引用哪条送哪条；要用请在提示词里写 @音频N"
+                % audio_idle)
         ref_items, ref_blocks = self._refs(cfg, vae, audio_vae, width, height, frame_count, log=log)
 
         if tags:

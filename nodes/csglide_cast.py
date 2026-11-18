@@ -240,6 +240,74 @@ def _whole_film_latent(cfg, log):
     return {"samples": out}
 
 
+def _read_stage_latent(name, cid, stage, log):
+    """「本段一采/二采潜空间」读档口：按**固定阶段**取本段续拍档。
+
+    与「整片潜空间」口的区别：只读本段、阶段写死（s1/s2），不跟时间轴当前
+    选中阶段走。供编排器在上游阶段不在本次提交范围时，把下游接回本段已写好的
+    档（只跑二采接 s1 档、只跑三采接 s2 档）。认档用 clip_cont_resolve —— 它认
+    档案 take_params 里真正记了该阶段且文件在盘上的那一版，不拿 current_take
+    硬拼（一采/二采曾各开 take，硬拼会指向从没写过的文件）。
+
+    档案不存在返回 None＋中文日志点名：首次跑一采时档还没写、口也没接线，
+    硬报错会炸掉一采。下游真接上来却缺档时收到 None 自然报错，日志已点名根因。
+    """
+    if not name or not cid:
+        return None
+    from .. import csglide_chain as chain
+    label = "一采" if stage == "s1" else "二采"
+    path = chain.clip_cont_resolve(name, cid, stage)
+    if not path:
+        log("【输出】「本段%s潜空间」口：段 %s 还没有%s续拍档 —— 先跑一轮%s写档。"
+            % (label, cid, label, label))
+        return None
+    try:
+        from safetensors.torch import load_file
+        data = load_file(path)
+    except Exception as e:
+        log("【输出】「本段%s潜空间」口：读档失败（%s）—— %s" % (label, path, e))
+        return None
+    order = [k for k in ("video", "audio") if k in data]
+    order += [k for k in data.keys() if k not in order]
+    streams = [data[k] for k in order]
+    if not streams:
+        log("【输出】「本段%s潜空间」口：档里没有 latent 流（%s）。" % (label, path))
+        return None
+    samples = (comfy.nested_tensor.NestedTensor(streams)
+               if len(streams) >= 2 else streams[0])
+    log("【输出】「本段%s潜空间」口：取段 %s 的%s档 %s"
+        % (label, cid, label, os.path.basename(path)))
+    return {"samples": samples}
+
+
+def _read_stage_film(name, cid, stage, log):
+    """「本段二采视频」读档口：按**固定阶段**取本段已写盘的成片，包成 VIDEO。
+
+    供视频口超分三采（RelayVSRStreaming）在只跑三采、二采被裁出范围时，从盘上
+    读本段二采成片（带音轨）喂它的「视频」口。认片用 clip_film_resolve —— 与
+    clip_cont_resolve 同口径，认 take_params.films 里真正登记且在盘上的那一版，
+    不拿 current_take 硬拼。缺档返回 None＋中文日志点名（首次渲染还没成片、口也
+    没接线，硬报错会炸掉前面的采）；下游真接上来却缺片时收到 None 自然报错。
+    """
+    if not name or not cid:
+        return None
+    from .. import csglide_chain as chain
+    label = "一采" if stage == "s1" else ("二采" if stage == "s2" else "三采")
+    path = chain.clip_film_resolve(name, cid, stage)
+    if not path:
+        log("【输出】「本段%s视频」口：段 %s 还没有%s成片 —— 先跑一轮%s出片。"
+            % (label, cid, label, label))
+        return None
+    film = _video_from_file(path)
+    if film is None:
+        log("【输出】「本段%s视频」口：成片包 VIDEO 失败（%s）—— 可能缺 comfy_api VIDEO API。"
+            % (label, path))
+        return None
+    log("【输出】「本段%s视频」口：取段 %s 的%s成片 %s"
+        % (label, cid, label, os.path.basename(path)))
+    return film
+
+
 # --------------------------------------------------------------------------
 # H3 constants (mirrors comfy_extras/nodes_minimax_h3.py)
 # --------------------------------------------------------------------------
@@ -1353,6 +1421,9 @@ def parse_h3_data(raw):
         # 内置轻量动画预览参数。20261108 前这个键没进白名单，
         # _builtin_model_chain 的 pv 恒为 {}（配置死路），已修。
         "preview": _preview_cfg(data.get("preview")),
+        # 阶段总线：前端组解析结果，严格校验在 core.csglide_stage_bus 做
+        "stage_flow": data.get("stage_flow")
+        if isinstance(data.get("stage_flow"), dict) else None,
     }
 
 
@@ -1420,6 +1491,8 @@ SEG_KEY_OWNER = {
 
     # —— 身份：跑哪一段由提交决定，不能跟着库里 state 最后停在哪一段走 ——
     "chain": "submit",
+    # 阶段总线状态由前端提交，中央库不覆盖
+    "stage_flow": "submit",
 }
 
 
@@ -2060,25 +2133,16 @@ def _filter_refs_by_prompt(cfg, prompt=None):
     # 数组」还是「空数组」对下游等价（都数不出素材），但两边必须同构，
     # 否则以后任一侧加了「按空位补提示」之类的逻辑就会瞬间对不上。
     #
-    # 例外：独立音频不参与按需过滤。官方 MiniMaxH3ReferenceToVideo 对 ref_audios
-    # 是无条件发送的（不看提示词），导演台原先也过滤，于是「摆好了音频、提示词
-    # 没写 @音频N」就静默丢弃——用户只看到音频没生效，查不出原因。
-    # 音频是「配乐/音色」这类整体氛围参考，本来就不一定在剧本里被逐句提到，
-    # 按需过滤对它没有省显存的意义（音频 token 占比极小），却极易误伤。
-    # 音频仍受 MAX_AUDIOS 上限约束，超出的按编号取前 N 个。
+    # 音频与图片/视频同口径，严格按 @音频N 引用发送（20261117 改回）：
+    # 此前为对齐官方节点「ref_audios 无条件发送」改成「架上摆了音频就送前 3 条」，
+    # 结果多个角色的声音样本同时摆架时，模型一次收到多条互不相干的声音参考，
+    # 人物声音错乱/串音。现在统一「引用哪条送哪条，不引用一条不送」；
+    # 「摆了没引用」不再静默——调用处有未引用音频的显式 ⚠ 提示。
     any_keep = any(keep.values())
     kept = {}
     for kind, idxs in keep.items():
         arr = cfg.get(kind)
         if not isinstance(arr, list):
-            continue
-        if kind == "audios":
-            all_idx = set(i for i in range(len(arr)) if arr[i])
-            if len(all_idx) > caps["audios"]:
-                all_idx = set(sorted(all_idx)[:caps["audios"]])
-            kept[kind] = sorted(i + 1 for i in all_idx)
-            cfg[kind] = [arr[i] if i in all_idx else None
-                         for i in range(len(arr))]
             continue
         kept[kind] = (sorted(i + 1 for i in idxs if i < len(arr) and arr[i])
                       if any_keep else [])
@@ -2214,10 +2278,22 @@ class CSGlideCast:
     # 20261106 端口重排（用户定）：模型输入/输出都置顶，名字统一「模型」。
     # 注意 ComfyUI 按端口**序号**存连线：旧工作流指向导演台的 8 根线全部
     # +1 才对得上，请用 _migrate_cast_ports.py 批量迁移，不要手工重连。
+    # 20261117 方案甲 P1b：末尾追加「本段一采潜空间」「本段二采潜空间」两个 LATENT
+    # 读档口（序号 9/10）。按**固定阶段**取本段已写好的续拍档，不跟时间轴当前
+    # 阶段走 —— 供编排器在上游阶段不在本次提交范围时，把下游接回本段的档。
+    # 按铁律追加在末尾，旧 9 根线零影响。
+    # 20261117 方案甲 P3：末尾再追加「本段二采视频」VIDEO 读档口（序号 11）。
+    # 现在三采是视频口超分（RelayVSRStreaming 吃二采成片 VIDEO），只跑三采时二采
+    # 被裁、RelayVSR 没片可吃 —— 本口按固定阶段 s2 从盘上读本段二采成片（带音轨）
+    # 喂它。与潜空间读档口同理：缺档返回 None＋中文日志，不炸首次渲染。
+    # 按铁律追加在末尾，旧 10 根线零影响。
     RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "INT",
-                    "FLOAT", "INT", "LATENT", "VIDEO")
+                    "FLOAT", "INT", "LATENT", "VIDEO", "LATENT", "LATENT", "VIDEO",
+                    "LATENT", "VIDEO")
     RETURN_NAMES = ("模型", "正面条件", "正面条件·二采三采", "潜空间", "总帧数",
-                    "秒数", "重叠帧", "整片潜空间", "整片")
+                    "秒数", "重叠帧", "整片潜空间", "整片",
+                    "本段一采潜空间", "本段二采潜空间", "本段二采视频",
+                    "下游潜空间", "下游视频")
     FUNCTION = "build"
     CATEGORY = "👨‍🏫班长/视频处理"
     DESCRIPTION = "MiniMax H3 导演节点——首/末关键帧或全参考，自动标注参考帧。"
@@ -3759,8 +3835,9 @@ class CSGlideCast:
             result = self._do_build(clip, vae, h3_data, audio_vae, first_frame,
                                     last_frame, refs, prompt_text, h3_override,
                                     prompt=prompt)
-            # 模型口已置顶：先按旧 8 元组（result[2] 仍是潜空间）算 patched model，
-            # 再拼成 9 元组。重排影响压在这一处，_do_build 一行不用动。
+            # 模型口已置顶：result[2] 仍是潜空间（口号未变），先算 patched model
+            # 再拼到元组首。P3 后 result 是 11 元组（末尾加了本段一采/二采潜空间与
+            # 本段二采视频读档口），拼成 12 元组；重排影响压在这一处，_do_build 一行不用动。
             patched = self._builtin_model_chain(model, result, h3_data, unique_id)
             return (patched,) + result
         except Exception as _e:
@@ -4010,8 +4087,25 @@ class CSGlideCast:
             # 先写驱动会被整份盖掉，音频锁噪丢失又退回「只参考」。
             out_latent = self._apply_driver(
                 cfg, audio_vae, out_latent, frame_count, log, prompt=prompt)
+            # 本段读档口（P1b/P3）：按固定阶段取本段已写好的 s1/s2 续拍档与 s2 成片。
+            # clip_id 已由 _register_clip 认段（含 shot uid 兜底）；裸跑无片名
+            # 时为 ""，各口都返回 None，不影响单段工作流。
+            _seg_name = str((cfg.get("chain") or {}).get("name") or "")
+            seg_s1_latent = _read_stage_latent(_seg_name, clip_id, "s1", log)
+            seg_s2_latent = _read_stage_latent(_seg_name, clip_id, "s2", log)
+            seg_s2_film = _read_stage_film(_seg_name, clip_id, "s2", log)
+            # 两个自动总线口：决策在 core，读档复用同一套函数，缺档返回 None
+            from ..core.csglide_stage_bus import (downstream_latent_stage,
+                                                  downstream_film_stage)
+            _bus_ls = downstream_latent_stage(cfg.get("stage_flow"))
+            _bus_fs = downstream_film_stage(cfg.get("stage_flow"))
+            bus_latent = (_read_stage_latent(_seg_name, clip_id, _bus_ls, log)
+                          if _bus_ls else None)
+            bus_film = (_read_stage_film(_seg_name, clip_id, _bus_fs, log)
+                        if _bus_fs else None)
             return (cond, hd_cond, out_latent, frame_count, seconds, overlap,
-                    film_latent, whole_film)
+                    film_latent, whole_film, seg_s1_latent, seg_s2_latent, seg_s2_film,
+                    bus_latent, bus_film)
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
@@ -4126,6 +4220,7 @@ class CSGlideCast:
                 "生效。要按首尾帧约束，请把模式切到「首/尾帧」（并加载 "
                 "minimax_h3_fl2va 开头的权重）。")
 
+        audio_filled = sum(1 for x in (cfg.get("audios") or []) if x)
         kept, over = _filter_refs_by_prompt(cfg, prompt_for_model)
 
         def _known(fmt, base, arr, used):
@@ -4154,6 +4249,13 @@ class CSGlideCast:
                     "其余已从提示词移除" % (label[k], n, cap, cap))
         else:
             log("【参考素材】提示词未引用任何 @标签，本次不送参考")
+        # 音频改回严格按需后（20261117），「摆了没引用」必须说出来——
+        # 当年改成无条件发送就是为了治静默丢弃，不能把那个坑原样请回来。
+        audio_idle = audio_filled - len(kept.get("audios") or [])
+        if audio_idle > 0:
+            log("【参考素材】⚠ 架上有 %d 条音频没被 @音频N 引用，本次不送——"
+                "音频与图片/视频同口径，引用哪条送哪条；要用请在提示词里写 @音频N"
+                % audio_idle)
         ref_items, ref_blocks = self._refs(cfg, vae, audio_vae, width, height, frame_count, log=log)
 
         if tags:

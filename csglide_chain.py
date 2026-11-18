@@ -449,120 +449,74 @@ def clip_json(name, cid):
 
 
 def clip_film(name, cid, take=1, stage=None, variant=None):
-    """这一段第 take 版、第 stage 阶段、第 variant 变体的成片路径。
+    """这一段第 take 版、第 stage 阶段的成片路径。
 
     成片必须和潜空间档案待在一起：一个片子的东西散落在 output 根目录，用户
     清目录时不知道哪个 mp4 属于哪一段哪个版本，备份/迁移也无从下手。放进来
     之后，拷走 h3_chain/<片名>/ 这一个文件夹就是完整工程。
 
-    20261111 阶段 C（Q5=A / Q7=C）：成片按阶段分流，s1/s2 不再互盖。命名与
-    clip_cont 同口径 —— s1 沿用旧名零迁移；s2 二采原片 .s2.mp4；s2 三采成品
-    .s2.final.mp4。新参数一律追加在末尾，老调用零改动。
+    20261117 方案甲(X)：成片按阶段分流，s1/s2/s3 各一份、互不覆盖。命名与
+    clip_cont 同口径 —— s1 沿用旧名零迁移；s2 二采原片 .s2.mp4；s3 三采成品
+    .s3.mp4。退役 raw/final 变体：variant 形参保留只为兼容旧签名，一律忽略。
     """
     stem = cid if take <= 1 else "%s.t%d" % (cid, take)
     s = str(stage or "").strip().lower()
-    v = str(variant or "").strip().lower()
-    if s != "s2":
-        suffix = ""
-    elif v == "final":
-        suffix = ".s2.final"
-    else:
-        suffix = ".s2"
+    suffix = ".%s" % s if s in ("s2", "s3") else ""
     return os.path.join(chain_dir(name), "%s%s.mp4" % (stem, suffix))
 
 
 def current_stage(name, default="s1"):
-    """整片级「时间轴当前选中阶段」的唯一读取口（s1 一采 / s2 二采）。
+    """整片级「时间轴当前选中阶段」的唯一读取口（s1 一采 / s2 二采 / s3 三采）。
 
     阶段必须是整片级全局状态：s1 画布 576×320、s2 画布 864×480，
     _whole_film_latent() 对段画布不一致会直接中止拼接，逐段混搭必然接不上。
     20261111 阶段 2 起导演台「一采/二采」按钮写 set_stage() → chain.stage；
-    所有读者（段落调取 / 整片潜空间拼接 / 承接窗口 / 钉帧 / 收片）一律调本函数，
-    没有任何第二处判阶段的地方，也就不会出现「存的是 s2、拼的是 s1」。
+    20261117 方案甲(X) 加「三采」(s3)。所有读者（段落调取 / 整片潜空间拼接 /
+    承接窗口 / 钉帧 / 收片）一律调本函数，没有任何第二处判阶段的地方，
+    也就不会出现「存的是 s2、拼的是 s1」。
     """
     try:
         s = str((load_chain(name) or {}).get("stage") or "").strip().lower()
     except Exception:
         s = ""
-    return s if s in ("s1", "s2") else default
+    return s if s in ("s1", "s2", "s3") else default
 
 
-# 20261111 用户纠正：切「二采」就该用二采成片，三采成品只是另一份可选。
-# 默认必须是 raw；之前把 final 当默认是设计错误，不是参数没调好。
-FILM_VARIANTS = ("raw", "final")
-FILM_VARIANT_LABEL = {"raw": "二采成片", "final": "三采最终成品"}
+# 20261117 方案甲(X)：三采升为独立阶段 s3，成片按阶段一份（s1/s2/s3），
+# 退役 raw/final 变体轴 —— 旧版把三采当二采的 final 变体、且 _film_key 把
+# 一切非 s2 归 "s1"，会让三采片登记到一采键、盖掉一采片。现在切「三采」就是
+# 切阶段 s3，不再需要「用三采成品」开关。
 
 
-def current_variant(name, default="raw"):
-    """整片级「成片变体」的唯一读取口（raw 二采成片 / final 三采成品）。"""
-    try:
-        v = str((load_chain(name) or {}).get("film_variant") or "").strip().lower()
-    except Exception:
-        v = ""
-    return v if v in FILM_VARIANTS else default
+def _film_key(stage, variant=None):
+    """收片登记 films 字典的键：s1 / s2 / s3（每阶段一份成片）。
 
-
-def _film_key(stage, variant):
-    """收片登记 films 字典的键：s1 / s2:raw / s2:final。"""
-    if str(stage or "").strip().lower() != "s2":
-        return "s1"
-    return ("s2:final" if str(variant or "raw").strip().lower() == "final"
-            else "s2:raw")
+    variant 形参保留只为兼容旧调用签名，一律忽略：变体轴已退役。
+    """
+    s = str(stage or "").strip().lower()
+    return s if s in ("s1", "s2", "s3") else "s1"
 
 
 def film_pick(name, cid, take=1, stage=None, variant=None, meta=None, fallback=None):
     """时间轴 / 导出 / 整片口该用哪一份成片 —— 所有读侧的唯一裁决口。
 
     真值是 take_params[take].films（收片时登记）。老档案没登记时原样回退到
-    fallback（一般就是 clip["film"]），升级不会让时间轴突然空白。s2 请求的
-    变体缺档时回退到该阶段另一份，避免「切了二采却一片空白」。
+    fallback（一般就是 clip["film"]），升级不会让时间轴突然空白。请求阶段缺档
+    时回退到该阶段约定文件名，再回退到 s1 主档，避免「切了阶段却一片空白」。
+    variant 形参保留只为兼容旧调用签名，一律忽略。
     """
     s = str(stage or current_stage(name)).strip().lower()
-    v = str(variant or current_variant(name)).strip().lower()
     if meta is None:
         meta = load_clip(name, cid) or {}
     tp = (meta.get("take_params") or {}).get(str(max(1, int(take or 1)))) or {}
     films = tp.get("films") or {}
-    key = _film_key(s, v)
-    path = str(films.get(key) or "")
+    path = str(films.get(_film_key(s)) or "")
     if path and os.path.isfile(path):
         return path
-    if s == "s2":
-        other = "s2:raw" if key == "s2:final" else "s2:final"
-        path = str(films.get(other) or "")
-        if path and os.path.isfile(path):
-            return path
-        cand = clip_film(name, cid, take, "s2", v)
-        if os.path.isfile(cand):
-            return cand
+    cand = clip_film(name, cid, take, s)
+    if os.path.isfile(cand):
+        return cand
     return fallback or clip_film(name, cid, take)
-
-
-@chainlocked
-def set_film_variant(name, variant):
-    """写「整片级成片变体」—— final 三采成品 / raw 二采原片，唯一写入口。"""
-    v = str(variant or "").strip().lower()
-    if v not in FILM_VARIANTS:
-        raise ValueError(
-            "成片变体只能是「三采最终成品」(final) 或「二采原片」(raw)，收到：%r"
-            % variant)
-    doc = load_chain(name)
-    doc["film_variant"] = v
-    save_chain(name, doc)
-    with _film_memo_lock:
-        _film_memo.pop(str(name), None)
-    # 与 set_stage 同一条写后读回护栏：DB 白名单漏登记会静默丢键（阶段 2 真机坑）。
-    if current_variant(name, default="") != v:
-        raise RuntimeError(
-            "成片变体没写进档案（写后读回不一致）：期望 %s，实际 %r。"
-            "多半是档案存储层的片级字段白名单漏登记 film_variant 键。"
-            % (v, current_variant(name, default="")))
-    stage = current_stage(name)
-    tip = ("二采导出将用「%s」。" % FILM_VARIANT_LABEL[v]) if stage == "s2" else (
-        "已选「%s」。当前时间轴还是「一采」(s1)，一采只有一份成片，"
-        "切到「二采」后才会生效。" % FILM_VARIANT_LABEL[v])
-    return {"variant": v, "label": FILM_VARIANT_LABEL[v],
-            "stage": stage, "提示": tip}
 
 
 @chainlocked
@@ -577,8 +531,8 @@ def set_stage(name, stage):
     只读出来给用户核对，绝不因切阶段篡改它。
     """
     s = str(stage or "").strip().lower()
-    if s not in ("s1", "s2"):
-        raise ValueError("阶段只能是「一采」(s1) 或「二采」(s2)，收到：%r" % stage)
+    if s not in ("s1", "s2", "s3"):
+        raise ValueError("阶段只能是「一采」(s1)、「二采」(s2) 或「三采」(s3)，收到：%r" % stage)
     doc = load_chain(name)
     doc["stage"] = s
     save_chain(name, doc)
@@ -601,14 +555,14 @@ def set_stage(name, stage):
         tp = (meta.get("take_params") or {}).get(
             str(max(1, int(meta.get("current_take") or 1)))) or {}
         canvas = {"w": int(tp.get("w") or 0), "h": int(tp.get("h") or 0)}
-    label = "一采" if s == "s1" else "二采"
+    label = {"s1": "一采", "s2": "二采", "s3": "三采"}[s]
     tip = "已切到「%s」。" % label
     if canvas["w"] and canvas["h"]:
         tip += "档案记录的当前画布 %d×%d；" % (canvas["w"], canvas["h"])
-    tip += "按你的设置，Cast 面板宽高不会自动改动，请自行确认二采画布。"
-    if s == "s2":
-        tip += ("二采成片分两份存（二采原片 .s2.mp4 / 三采成品 .s2.final.mp4），"
-                "当前导出用「%s」。" % FILM_VARIANT_LABEL[current_variant(name)])
+    tip += "按你的设置，Cast 面板宽高不会自动改动，请自行确认本阶段画布。"
+    tip += {"s1": "一采成片 clip.mp4（只有一份）。",
+            "s2": "二采原片 .s2.mp4（三采成品已独立归「三采」阶段）。",
+            "s3": "三采成品 .s3.mp4（潜空间放大或 RelayVSR 视频超分，取本次跑的那份）。"}[s]
     return {"stage": s, "label": label, "canvas": canvas, "提示": tip}
 
 
@@ -653,6 +607,33 @@ def clip_cont_resolve(name, cid, stage=None):
         if p and os.path.isfile(p):
             return p
     exact = clip_cont(name, cid, cur, stage)
+    return exact if exact and os.path.isfile(exact) else None
+
+
+def clip_film_resolve(name, cid, stage=None):
+    """按阶段认这一段**实际写盘**的成片；找不到返回 None。
+
+    与 clip_cont_resolve 同口径，只是真值从 take_params[t].stages 换成
+    take_params[t].films（收片登记）、键走 _film_key(stage)。为什么不能只拼
+    clip_film(current_take, stage)：s1/s2/s3 可能是多次独立 Queue、各开 take，
+    按 current_take 拼会指向从没写过的文件。从当前 take 往回找最近一版真正
+    登记了该阶段成片且在盘上的，都没有再退回按段号拼的约定文件名。只读这一段
+    自己的档案，绝不按目录 mtime 猜片。供导演台「本段二采视频」读档口用。
+    """
+    if stage in (None, ""):
+        stage = current_stage(name)
+    key = _film_key(stage)
+    meta = load_clip(name, cid) or {}
+    tp = meta.get("take_params") or {}
+    cur = int(meta.get("current_take") or 1)
+    takes = sorted({int(t) for t in tp if str(t).isdigit()}, reverse=True)
+    for t in takes:
+        if t > cur:
+            continue
+        p = str(((tp.get(str(t)) or {}).get("films") or {}).get(key) or "")
+        if p and os.path.isfile(p):
+            return p
+    exact = clip_film(name, cid, cur, stage)
     return exact if exact and os.path.isfile(exact) else None
 
 
@@ -2032,23 +2013,14 @@ def collect_run(name, cid, prompt_id):
             "请确认一采/二采各接了一个「🎬 H3 VAE 快速解码」，"
             "或到导演台把时间轴切到已出片的那个阶段。"
             % (stage, cid, listed))
-    # 20261111 阶段 C（Q7=C）：s2 允许两份分段片 —— 二采原片(raw) +
-    # 三采成品(final)，按 bz_variant 分组各写各的文件；s1 仍严格一份。
-    # 同一变体出现两个 = 真接错线，照样拒收，不靠「取第一个」糊过去。
-    by_variant = {}
-    for v in declared:
-        vv = ("final" if str(_decl(v).get("bz_variant") or "raw").strip().lower()
-              == "final" else "raw")
-        if stage != "s2":
-            vv = "raw"
-        if vv in by_variant:
-            raise ValueError(
-                "有多个视频合并节点都声明为这一段「%s / %s」的分段片：#%s 与 #%s —— 只保留一个"
-                % (stage, vv, by_variant[vv].get("node"), v.get("node")))
-        by_variant[vv] = v
-    # 默认展示 / 导出用二采成片；只有用户显式切到「用三采成品」才换。
-    default_vv = "raw" if "raw" in by_variant else "final"
-    segment = by_variant[default_vv]
+    # 20261117 方案甲(X)：每个阶段恰好一份分段片（s1 一采 / s2 二采原片 /
+    # s3 三采成品）。declared 已按 bz_stage==当前阶段筛过，这里再出现两个就是
+    # 真接错线，照样拒收，不靠「取第一个」糊过去。退役 raw/final 变体分组。
+    if len(declared) > 1:
+        raise ValueError(
+            "有多个视频合并节点都声明为这一段「%s」阶段的分段片：#%s 与 #%s —— 只保留一个"
+            % (stage, declared[0].get("node"), declared[1].get("node")))
+    segment = declared[0]
 
     take = max(1, int(meta.get("current_take") or 1))
     # 20261111：按当前选中阶段校验对应的那份 cont（s1 仍是旧主档文件名）。
@@ -2061,35 +2033,28 @@ def collect_run(name, cid, prompt_id):
 
     take_params = dict(meta.get("take_params") or {})
     # 写盘方已经在本版登记过 stages / run_fingerprint；这里必须**合并**而不是
-    # 整条覆写，否则收一次片就把 s2 那份档的登记抹掉了（阶段档静默丢失）。
+    # 整条覆写，否则收一次片就把别的阶段那份档的登记抹掉了（阶段档静默丢失）。
     rec = dict(take_params.get(str(take)) or {})
     films = dict(rec.get("films") or {})
-    briefs = {}
-    for vv, v in by_variant.items():
-        src = _output_path_from_descriptor(v)
-        if not os.path.isfile(src):
-            raise ValueError("找不到分段视频源文件：%s" % v.get("filename"))
-        dest = clip_film(name, cid, take, stage, vv)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        if os.path.abspath(src) != os.path.abspath(dest):
-            shutil.copy2(src, dest)
-        vinfo = probe_film_info(dest)
-        vframes = int(vinfo.get("frames") or 0)
-        if vframes <= 0:
-            raise ValueError("收片后无法确认视频帧数：%s" % os.path.basename(dest))
-        films[_film_key(stage, vv)] = dest
-        brief = _media_brief(v)
-        brief.update({
-            "width": int(vinfo.get("width") or 0),
-            "height": int(vinfo.get("height") or 0),
-            "frames": vframes,
-            "archived_path": dest,
-        })
-        briefs[vv] = brief
-
-    default_brief = briefs[default_vv]
-    frames = int(default_brief["frames"])
-    dest = default_brief["archived_path"]
+    src = _output_path_from_descriptor(segment)
+    if not os.path.isfile(src):
+        raise ValueError("找不到分段视频源文件：%s" % segment.get("filename"))
+    dest = clip_film(name, cid, take, stage)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if os.path.abspath(src) != os.path.abspath(dest):
+        shutil.copy2(src, dest)
+    vinfo = probe_film_info(dest)
+    frames = int(vinfo.get("frames") or 0)
+    if frames <= 0:
+        raise ValueError("收片后无法确认视频帧数：%s" % os.path.basename(dest))
+    films[_film_key(stage)] = dest
+    default_brief = _media_brief(segment)
+    default_brief.update({
+        "width": int(vinfo.get("width") or 0),
+        "height": int(vinfo.get("height") or 0),
+        "frames": frames,
+        "archived_path": dest,
+    })
     rec.update({
         "prompt_id": prompt_id,
         "source_node": segment.get("node"),
@@ -2135,14 +2100,13 @@ def collect_run(name, cid, prompt_id):
         # 这里原先写着 archive_on: list(arch_on)，定义删了、引用没删 —— 每次
         # 收片到这儿 NameError，成片已复制完却走不到 set_film，时间轴一直空白。
         "stage": stage,
-        "variants": {k: b["archived_path"] for k, b in briefs.items()},
+        "variants": {_film_key(stage): dest},
     }
     clip_from, clip_to, head_trim = _span_of(name, cid)
     # clip["film"] 是时间轴 / 预览 / 拼片的唯一读口：这里直接指向当前
     # 「阶段 + 变体」选中的那一份，切换时由 film_summary 的 film_pick 动态选，
     # 读侧一行都不用改。
-    show_path = film_pick(name, cid, take, stage, current_variant(name),
-                          fallback=dest)
+    show_path = film_pick(name, cid, take, stage, fallback=dest)
     out = set_film(name, cid, show_path, frames=frames,
                    head=_compute_film_head(clip_from, clip_to, frames,
                                            head_trim=head_trim))
@@ -2240,10 +2204,9 @@ def film_summary(name):
         if _hit and (_now - _hit[0]) < _FILM_SUMMARY_TTL \
                 and _hit[1] == _archive_version_now():
             return _hit[2]
-    # 20261111 阶段 C：成片视图跟随「阶段 + 变体」，与整片导出同一份选片。
+    # 20261117 方案甲(X)：成片视图跟随「阶段」(s1/s2/s3)，与整片导出同一份选片。
     # 所有读侧（时间轴 / 预览 / 整片口 / 拼片）都吃这个 film 字段，改这里就够。
     _stage = current_stage(name)
-    _variant = current_variant(name)
     info = summary(name)
     fps = float(info.get("fps") or FRAME_FPS)
     # 段序：老档案 pins 分类器判断「绕回」要拿它比轴向位置
@@ -2271,7 +2234,7 @@ def film_summary(name):
         ff = int(c.get("film_frames") or 0)
         _film_path = film_pick(name, c.get("id"),
                                max(1, int(c.get("current_take") or 1)),
-                               _stage, _variant, meta=c,
+                               _stage, meta=c,
                                fallback=c.get("film"))
         # playable 必须实时：用户手动删掉成片后轴上要立刻转"不可播"，
         # 目录清单有 1.5s TTL，这里不能用它（_film_selftest 红线）。
@@ -2864,8 +2827,7 @@ def export_film_plan(name, at=None):
 
     picks = [r for r in rows if r["index"] <= cut]
     _stage = current_stage(name)
-    _variant = current_variant(name)
-    _stage_label = "二采" if _stage == "s2" else "一采"
+    _stage_label = {"s1": "一采", "s2": "二采", "s3": "三采"}.get(_stage, "一采")
     # 20261111 方案 B：轨静音改的是**驱动混音**，但已渲染的 mp4 里那条音轨
     # 已经混进去了 —— H3 成片只有一条 AV 音轨，导出阶段物理上抽不掉。
     # 用「静音最后一次生效时间」比对成片 mtime，点名还是旧混音的段，
@@ -2900,16 +2862,11 @@ def export_film_plan(name, at=None):
     common = {
         "name": name,
         "stage": _stage,
-        "variant": _variant,
-        "variant_label": FILM_VARIANT_LABEL[_variant],
         "mute_stale_clips": mute_stale,
         "film_mute_warning": film_mute_warning,
-        # 20261111 阶段 C：成片已按 (段, 版本, 阶段, 变体) 分开落盘，导出计划
-        # 必须写明这次拼的是哪一份，否则用户切了「用二采原片」却不知道生效没有。
-        "film_stage_warning": (
-            "本次导出用「%s」·「%s」。"
-            % (_stage_label, FILM_VARIANT_LABEL[_variant]) if _stage == "s2" else
-            "本次导出用「一采」成片（一采只有一份）。"),
+        # 20261117 方案甲(X)：成片已按 (段, 版本, 阶段) 分开落盘，导出计划
+        # 必须写明这次拼的是哪一阶段，否则用户切了阶段却不知道生效没有。
+        "film_stage_warning": "本次导出用「%s」成片（每阶段各一份）。" % _stage_label,
         "beyond": [brief(r) for r in rows if r["index"] > cut],
         "pending": [{"index": r["index"], "name": r["name"],
                      "kind": r["pending"],
@@ -3978,6 +3935,16 @@ def summary(name):
         # 段落 json 被手动删了 / 写坏了：静默丢掉会让人以为那段从来没生成过，
         # 于是"我的第 3 段呢"变成无头案。单独列出来交给面板报。
         (clips if m else broken).append(m or c)
+    # 拓扑状态灯用：当前段各阶段档案是否在盘。刻意复用读档口同一套 resolve，
+    # 不另拼路径 —— 灯说「有档」而读档口读不到，就是第二套口径酿的错。
+    cur_cid = str(chain.get("current") or "")
+    stage_files = {}
+    if cur_cid:
+        for st in ("s1", "s2", "s3"):
+            stage_files[st] = {
+                "latent": bool(clip_cont_resolve(name, cur_cid, st)),
+                "film": bool(clip_film_resolve(name, cur_cid, st)),
+            }
     return {
         # 只留还读得到的段；total_frames 也就只统计这些，不会虚高
         "broken": broken,
@@ -3987,11 +3954,10 @@ def summary(name):
         "prompt_global": chain.get("prompt_global", ""),
         "current": chain.get("current"),
         "locked": bool(chain.get("locked")),
-        # 时间轴当前选中阶段 / 成片变体：导演台按钮、后端所有读者共用的整片级状态。
-        # 前端 F5 后靠这两个字段恢复按钮高亮，缺一个就会「按钮亮默认、后端按档案」。
+        # 时间轴当前选中阶段：导演台按钮、后端所有读者共用的整片级状态。
+        # 前端 F5 后靠它恢复按钮高亮，缺了就会「按钮亮默认、后端按档案」。
         "stage": current_stage(name),
-        "variant": current_variant(name),
-        "variant_label": FILM_VARIANT_LABEL[current_variant(name)],
+        "stage_files": stage_files,
         "total_frames": sum(int(c.get("frames", 0)) for c in clips),
         "clips": clips,
     }
@@ -4838,22 +4804,6 @@ try:
         stage = str(body.get("stage") or "").strip().lower()
         try:
             out = await _io(set_stage, name, stage)
-        except ValueError as exc:
-            return _json({"error": str(exc)}, 400)
-        return _json(out)
-
-    @PromptServer.instance.routes.post("/cglide/chain/film_variant")
-    async def _route_film_variant(request):
-        """设「整片级成片变体」（final 三采成品 / raw 二采原片）。"""
-        try:
-            body = await request.json()
-        except Exception:
-            return _json({"error": "请求体不是 JSON"}, 400)
-        name = str((body or {}).get("name") or "").strip()
-        if not name:
-            return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
-        try:
-            out = await _io(set_film_variant, name, (body or {}).get("variant"))
         except ValueError as exc:
             return _json({"error": str(exc)}, 400)
         return _json(out)

@@ -244,10 +244,6 @@
       "模型": [
         "32",
         0
-      ],
-      "视频VAE": [
-        "6",
-        0
       ]
     },
     "class_type": "BanZhang_SelfLiftMultiStage",

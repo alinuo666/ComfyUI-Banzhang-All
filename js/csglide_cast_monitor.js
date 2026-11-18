@@ -4,6 +4,7 @@ import { blankState } from "./csglide_cast_core.js";
 import { createFilmMonitor } from "./csglide_film.js";
 import { el } from "./csglide_ui_kit.js";
 import { projectShots } from "./csglide_seg_projection.js";
+import { RUN_MODES, DEFAULT_RUN_MODE, S3_MODES, DEFAULT_S3_MODE } from "./bz_stage_orchestrator.js";
 
 /* ============================================================
  * 成片监视器 / 时间轴 / 渲染控制 / 渲染范围
@@ -806,41 +807,37 @@ export function installMonitor(ui) {
      注意：裸 Ctrl+Z 仍是 ComfyUI 画布撤销（会整张工作流回滚），导演台不再
      提供任何撤销快捷键 —— 这是明确的取舍，不是遗漏。 */
 
-  tsep();
-
-  /* —— 时间轴阶段互斥（20261111 阶段 2）——
-     一采(s1) / 二采(s2) 是**整片级**开关，写的是 chain.stage。后端所有读者
-     （📤 段落调取 / 整片潜空间拼接 / 承接窗口 / 钉帧 / 收片）一律按它取档，
-     前端不缓存第二份阶段真值。s1 画布 576×320、s2 画布 864×480，逐段混搭
-     必然让整片潜空间拼接中止，所以这两颗必须严格互斥。
-     Q8=A：只切档案阶段 + 中文提示，绝不自动改 Cast 面板宽高。 */
+  /* —— 时间轴阶段互斥（20261117 方案甲 X）——
+     一采(s1) / 二采(s2) / 三采(s3) 是**整片级**开关，写的是 chain.stage。后端
+     所有读者（📤 段落调取 / 整片潜空间拼接 / 承接窗口 / 钉帧 / 收片）一律按它
+     取档，前端不缓存第二份阶段真值。s1 画布 576×320、s2 画布 864×480，逐段混搭
+     必然让整片潜空间拼接中止，所以这三颗必须严格互斥。
+     Q8=A：只切档案阶段 + 中文提示，绝不自动改 Cast 面板宽高。
+     退役「用三采成品」变体钮：三采已独立成 s3 阶段，切三采按钮即取三采成品。 */
   const stageBtns = {};
   const paintStage = (s) => {
-    const cur = s === "s2" ? "s2" : "s1";
+    const cur = (s === "s2" || s === "s3") ? s : "s1";
     Object.keys(stageBtns).forEach((k) => {
       stageBtns[k].classList.toggle("active", k === cur);
       stageBtns[k].setAttribute("aria-pressed", k === cur ? "true" : "false");
     });
     ui.stage = cur;
-    /* 变体钮只在二采出现：一采没有「三采成品」这份文件，摆着是噪音。
-       用 ui.btnVariant 守卫而非直接引用 const btnVariant —— paintStage 定义在
-       btnVariant 之前，守卫让显隐与定义顺序解耦，syncStage 异步回灌时也安全。 */
-    if (ui.btnVariant) ui.btnVariant.style.display = cur === "s2" ? "" : "none";
   };
   ui.paintStage = paintStage;
   /* 初始化从档案读真实阶段，不能默认写死 s1 —— 否则 F5 之后按钮亮「一采」、
      后端却在按「二采」取档，属于「看着对、其实错」最难查的一类。 */
   async function syncStage() {
     const name = castName();
-    if (!name) { paintStage("s1"); paintVariant("raw"); return; }
+    if (!name) { paintStage("s1"); return; }
     try {
       const res = await api.fetchApi(
         "/cglide/chain/summary?name=" + encodeURIComponent(name));
       const d = await res.json().catch(() => ({}));
       const okState = res.ok && !d.error;
       paintStage(okState ? d.stage : "s1");
-      paintVariant(okState ? d.variant : "raw");
-    } catch (e) { paintStage("s1"); paintVariant("raw"); }
+    } catch (e) { paintStage("s1"); }
+    /* 切工程后拓扑状态灯跟着换档案（stageflow 自己拉 summary.stage_files） */
+    ui.stageFlowRefresh?.();
   }
   ui.syncStage = syncStage;   /* 切换工程后由工程同步块调用，保持按钮与档案一致 */
   async function setStage(s, btn) {
@@ -857,7 +854,7 @@ export function installMonitor(ui) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
       paintStage(d.stage || s);
-      ui.lanesFlash(d.提示 || ("已切到「" + (s === "s2" ? "二采" : "一采") + "」"));
+      ui.lanesFlash(d.提示 || ("已切到「" + ({ s1: "一采", s2: "二采", s3: "三采" }[s] || "一采") + "」"));
     } catch (err) {
       ui.lanesFlash("切阶段没成：" + (err.message || err)
         + " —— 时间轴阶段保持原样");
@@ -872,74 +869,86 @@ export function installMonitor(ui) {
   stageBtns.s2 = laneBtn("二采", "gcast-btn gcast-stage-btn",
     "时间轴切到二采（s2）：续接档 .s2.cont.safetensors，画布 864×480",
     () => setStage("s2", stageBtns.s2));
+  stageBtns.s3 = laneBtn("三采", "gcast-btn gcast-stage-btn",
+    "时间轴切到三采（s3）：续接档 .s3.cont.safetensors，成片 .s3.mp4"
+    + "（潜空间放大或 RelayVSR 视频超分）",
+    () => setStage("s3", stageBtns.s3));
 
-  /* —— 成片变体小切换（阶段 C / Q7=C）——
-     二采有两份成片：二采成片(raw) 与三采最终成品(final)，**默认 raw**。
-     20261111 用户纠正：切「二采」当然该用二采成片，三采成品只是另一份可选，
-     绝不默认抢占。放在阶段组里、紧挨导出组：它和「一采/二采」是同一件事的
-     两个维度；
-     paintVariant 也必须在 syncStage() 发起前定义好（const 有 TDZ）。
-     状态写进档案（整片级），时间轴 / 预览 / 导出都由后端 film_pick 跟随。 */
-  const btnVariant = el("button", "gcast-btn gcast-stage-btn", "🎞 用三采成品");
-  btnVariant.type = "button";
-  btnVariant.title = "二采默认用「二采成片」；点一下改用「三采最终成品」，"
-    + "再点一下切回（不重新渲染，只换拼片用的那份文件）";
-  const paintVariant = (v) => {
-    const useFinal = v === "final";
-    btnVariant.classList.toggle("active", useFinal);
-    btnVariant.textContent = useFinal ? "🎞 已用三采成品" : "🎞 用三采成品";
-    btnVariant.setAttribute("aria-pressed", useFinal ? "true" : "false");
-    ui.filmVariant = useFinal ? "final" : "raw";
-  };
-  ui.paintVariant = paintVariant;
-  async function setFilmVariant(v) {
-    if (ui.run) { ui.lanesFlash("正在渲染 —— 跑完这一轮再换成片"); return; }
-    const name = castName();
-    if (!name) { ui.lanesFlash("还没有片名 —— 先在指挥条的工程名上填一个"); return; }
-    btnVariant.disabled = true;
-    try {
-      const res = await api.fetchApi("/cglide/chain/film_variant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, variant: v }),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
-      paintVariant(d.variant || v);
-      ui.lanesFlash(d.提示
-        || (v === "final" ? "已改用「三采最终成品」" : "已改回「二采成片」"));
-    } catch (err) {
-      ui.lanesFlash("换成片没成功：" + (err.message || err)
-        + " —— 当前成片保持原样");
-    } finally {
-      btnVariant.disabled = false;
-    }
-  }
-  ui.setFilmVariant = setFilmVariant;
-  btnVariant.onclick = (e) => {
-    e.stopPropagation();
-    void setFilmVariant(ui.filmVariant === "raw" ? "final" : "raw");
-  };
-  ui.btnVariant = btnVariant;
-
-  /* 阶段分段控件（20261112 用户定：第 2 条合并）——
-     一采/二采 + 成片变体三颗收进一个连通外壳，读作「一个控件」。laneBtn 已把
-     s1/s2 append 进 lanesTools，这里 append 把它们连同 btnVariant 一起 reparent
-     进 stageSeg（DOM append 移动节点、不复制），外壳落在原变体钮的位置（阶段组
-     tsep 与渲染组 tsep 之间）。变体钮显隐由 paintStage 按阶段控制（只在二采出现）；
-     默认 raw、手动切、互斥、不自动改宽高——20261111 的决定一条都不碰。 */
+  /* 阶段分段控件（20261117 方案甲 X）——
+     一采/二采/三采三颗收进一个连通外壳，读作「一个控件」。laneBtn 已把各按钮
+     append 进 lanesTools，这里 append 把它们一起 reparent 进 stageSeg（DOM append
+     移动节点、不复制），外壳落在阶段组 tsep 与渲染组 tsep 之间。
+     退役「用三采成品」变体钮：三采独立成 s3，切按钮即取档。
+     默认 s1、手动切、互斥、不自动改宽高——20261111 的决定一条都不碰。 */
   const stageSeg = el("div", "gcast-stage-seg");
-  stageSeg.append(stageBtns.s1, stageBtns.s2, btnVariant);
-  lanesTools.append(stageSeg);
+  stageSeg.append(stageBtns.s1, stageBtns.s2, stageBtns.s3);
+  /* 阶段切换由拓扑图开关取代，stageSeg 保留对象但不挂载 */
+
+  /* —— 运行模式下拉（20261117 方案甲 P2c）——
+     阶段按钮决定「时间轴取哪一采的档」（整片级、写后端 chain.stage）；这颗下拉
+     决定「这一次提交跑哪些采的出片口」（提交级、纯前端编排，不写后端）。两者正交：
+     切到二采档 + 选「只跑本阶段」= 只出二采片，一采用读档口喂、不重跑。
+     默认「全程」= 与旧行为完全一致（不裁输出、不改接线），开箱即用。
+     状态双写 ui.runMode + node.properties.gcast_run_mode，刷新后恢复（properties 优先）。 */
+  const runModeSel = el("select", "gcast-runmode");
+  runModeSel.title = "本次提交跑哪些采：只跑本阶段 / 从本阶段跑到最后 / 全程（默认）";
+  for (const m of RUN_MODES) {
+    const o = el("option", "", m.label);
+    o.value = m.value;
+    runModeSel.append(o);
+  }
+  const savedMode = (ui.node.properties && ui.node.properties.gcast_run_mode) || DEFAULT_RUN_MODE;
+  ui.runMode = RUN_MODES.some((m) => m.value === savedMode) ? savedMode : DEFAULT_RUN_MODE;
+  runModeSel.value = ui.runMode;
+  runModeSel.onchange = () => {
+    ui.runMode = runModeSel.value;
+    if (ui.node.properties) ui.node.properties.gcast_run_mode = ui.runMode;
+  };
+  ui.runModeSel = runModeSel;
+  /* 运行模式由主按钮按拓扑开关自动判断，下拉保留对象但不挂载 */
+
+  /* —— 三采方式切换钮（20261117 方案甲 P3）——
+     两态分段钮「视频口超分 ｜ 潜空间放大」，默认视频口超分（现在三采的实际方式）。
+     它决定本次提交认哪条三采子图为出口、跨采改接哪个读档口（视频→口11 / 潜空间→口10），
+     由 bz_queue_align 把 ui.s3Mode 传进编排器。**不自动改画布接线**：你接了哪条子图
+     钮就选哪条跑；钮与画布拓扑对不上时编排器按实际有的那条安全兜底＋控制台点名。
+     状态双写 ui.s3Mode + node.properties.gcast_s3_mode，刷新 properties 优先恢复。 */
+  const s3Btns = {};
+  const paintS3Mode = (m) => {
+    const cur = m === "latent" ? "latent" : "video";
+    Object.keys(s3Btns).forEach((k) => {
+      s3Btns[k].classList.toggle("active", k === cur);
+      s3Btns[k].setAttribute("aria-pressed", k === cur ? "true" : "false");
+    });
+    ui.s3Mode = cur;
+  };
+  ui.paintS3Mode = paintS3Mode;
+  const setS3Mode = (m) => {
+    paintS3Mode(m);
+    if (ui.node.properties) ui.node.properties.gcast_s3_mode = ui.s3Mode;
+  };
+  ui.setS3Mode = setS3Mode;
+  const s3Seg = el("div", "gcast-stage-seg gcast-s3mode-seg");
+  for (const m of S3_MODES) {
+    const b = laneBtn(m.label, "gcast-btn gcast-stage-btn gcast-s3mode-btn",
+      m.value === "video"
+        ? "三采视频口超分：RelayVSR 吃本段二采成片（带音轨），跨采改接「本段二采视频」口"
+        : "三采潜空间放大：终极放大吃本段二采潜空间，跨采改接「本段二采潜空间」口",
+      () => setS3Mode(m.value));
+    s3Btns[m.value] = b;
+    s3Seg.append(b);
+  }
+  const savedS3 = (ui.node.properties && ui.node.properties.gcast_s3_mode) || DEFAULT_S3_MODE;
+  paintS3Mode(S3_MODES.some((m) => m.value === savedS3) ? savedS3 : DEFAULT_S3_MODE);
+  ui.s3Seg = s3Seg;
+  /* 三采方式由拓扑连线类型表达，s3Seg 保留对象但不挂载 */
 
   /* 20261111 用户定：「删除联动互斥器按钮和其代码，我还是去节点上手动切换」。
      阶段 3 的联动按钮、localStorage 状态、前端联动标志整套删除。
-     轴头阶段组只留一采/二采 + 成片变体两件真数据。 */
+     轴头阶段组只留一采/二采/三采三颗真数据（20261117 方案甲 X）。 */
 
-  paintVariant("raw");
   paintStage("s1");
   void syncStage();
-  tsep();
 
   /* —— 生成 / 交付组 ——
      渲染（重新生成画面）与导出（只拼接、不生成）是一前一后两步，挨在一起。 */
@@ -997,7 +1006,6 @@ export function installMonitor(ui) {
     if (ui.openHistoryMenu) ui.openHistoryMenu(btnHistory);
   };
   lanesTools.append(btnHistory);
-  tsep();
 
   /* —— 历史组已删（20261012 用户定）：轴头上不再放撤销 / 重做 / 历史 ▾。
      20261026：撤销 / 重做**彻底删除**，连快捷键也不再保留（见 shots.js 顶部说明）。
@@ -1172,7 +1180,8 @@ export function installMonitor(ui) {
 
   /* 反馈条垫在最底：上面是落地行（渲染结果 / 未接文案台的告警），它再往下
      独占一行 —— 说的是"刚做的那个动作怎么样了"，放在最后不挡任何操作。 */
-  ui.root.append(ui.cmdBar, ui.studioRow, lanesWrap, footRow, flashBar);
+  /* 拓扑区在双栏（监视器+参数）下方，对齐原型 */
+  ui.root.append(ui.cmdBar, ui.studioRow, ui.stageFlowWrap, lanesWrap, footRow, flashBar);
 
   /* 右栏（设置 + 首尾帧）**不做限高**：内容多高，gcast-studio 就自然撑多高、把
      下方全宽时间轴往下推，全貌直接露出（用户明确要的旧行为）。原先"限高=监视器

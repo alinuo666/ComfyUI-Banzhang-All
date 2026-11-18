@@ -75,6 +75,7 @@ import { installConflict } from "./csglide_cast_conflict.js";
 import { installMeta } from "./csglide_cast_meta.js";
 import { installListeners } from "./csglide_cast_listeners.js";
 import { installPaste } from "./csglide_cast_paste.js";
+import { installStageFlowUI } from "./csglide_cast_stageflow.js";
 
 /* =========================================================================
  * H3 Studio — UI
@@ -175,6 +176,9 @@ function buildUI(node) {
   installCmdBar(ui);
   installSettings(ui);
   installAlias(ui);
+  /* 必须在 installMonitor 之前：monitor 内部 root.append 会引用 stageFlowWrap，
+     晚了 wrap 是 undefined，append 会把 undefined 转成文本 "undefined" 且拓扑图挂不进 DOM */
+  installStageFlowUI(ui);
   installMonitor(ui);
   installSlots(ui);
   installWave(ui);
@@ -244,6 +248,8 @@ function buildUI(node) {
       window.removeEventListener("focus", ui.onWinFocus, true);
       api.removeEventListener("executed", ui.onExecuted);
       api.removeEventListener("executing", ui.onExecuting);
+      /* 拓扑分区：graph 钩子实例与运行事件监听一并摘掉，热重建不重复订阅 */
+      try { ui.stageFlowDestroy?.(); } catch { /* 已清理 */ }
       /* 内置逐帧预览：热重建 rebuildCastUI 会先 destroy 再 buildUI，
          不注销会重复订阅；Blob URL 也要一并回收。 */
       if (ui.onH3Preview) api.removeEventListener("minimax_h3_preview_override", ui.onH3Preview);
@@ -308,6 +314,11 @@ function pinCastPortLabels(node) {
     else if (key === "帧数") slot.label = "总帧数";
     /* 整片（VIDEO）成品口：直连视频合并节点的「🎬 视频文件」。 */
     else if (key === "整片" || key === "wholefilm" || key === "whole_film") slot.label = "🎬 整片";
+    /* 本段读档口（P1b）：按固定阶段取本段已写好的续拍档，供编排器接下游。 */
+    else if (key === "本段一采潜空间") slot.label = "📥 本段一采潜空间";
+    else if (key === "本段二采潜空间") slot.label = "📥 本段二采潜空间";
+    /* 本段二采视频读档口（P3）：视频口超分三采取本段二采成片（带音轨）。 */
+    else if (key === "本段二采视频") slot.label = "📥 本段二采视频";
   };
   for (const inp of node.inputs || []) pin(inp);
   for (const out of node.outputs || []) pin(out);

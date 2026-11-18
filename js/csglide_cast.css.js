@@ -152,14 +152,14 @@ export const CSS = `
    启用态与全站「选中」控件同一套语言：淡 accent 底 + 同色描边 + 同色字
    （.gcast-chip.on / .gcast-seam-chip.is-on / .gcast-play.on 都是这个范式）。
    旧版给实心高饱和亮蓝 + 白字，22px 高的轴头里那块色太跳、和旁边「✂ 裁切」
-   「🎞 用三采成品」完全不是一套质感。用 var() 还有个好处：--h3-accent 随
+   「三采」完全不是一套质感。用 var() 还有个好处：--h3-accent 随
    data-mode 自动切（fl2va 模式变绿），不用为两种模式各写一份。 */
 .gcast-lanes-hd .tools button.gcast-stage-btn { min-width:54px; }
 .gcast-lanes-hd .tools button.gcast-stage-btn.active {
   border-color:var(--h3-accent); color:var(--h3-accent);
   background:var(--h3-accent-dim); font-weight:600; }
 .gcast-lanes-hd .tools button.gcast-stage-btn:disabled { opacity:.55; cursor:wait; }
-/* 阶段分段控件（20261112 用户定：一采/二采 + 成片变体并成一个控件）。
+/* 阶段分段控件（20261117 方案甲 X：一采/二采/三采并成一个控件）。
    连通外壳：共享描边 + 圆角 + 浅底（--h3-well 轨道），内部三颗去独立圆角、
    用左分隔线相连，读作「一个分段控件」而非三颗散钮。启用态仍走上面
    .gcast-stage-btn.active 的全站选中语言（淡 accent 底 + 同色字）；分隔线由
@@ -174,6 +174,25 @@ export const CSS = `
   border:none; border-radius:0; min-width:54px; }
 .gcast-lanes-hd .tools .gcast-stage-seg button.gcast-stage-btn + button.gcast-stage-btn {
   border-left:1px solid var(--h3-line); }
+/* 运行模式下拉（20261117 方案甲 P2c）：与阶段分段控件同一套外壳语言
+   （--h3-well 轨道 + --h3-line 描边 + 7px 圆角），紧挨阶段组右侧。
+   原生 select 去掉系统外观、自绘箭头，字色随 --h3 文本变量，聚焦描边染 accent。 */
+.gcast-lanes-hd .tools select.gcast-runmode {
+  flex:none; height:22px; padding:0 22px 0 8px; font-size:11px;
+  color:var(--h3-txt); background:var(--h3-well);
+  border:1px solid var(--h3-line); border-radius:7px; cursor:pointer;
+  appearance:none; -webkit-appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,var(--h3-dim) 50%),
+    linear-gradient(135deg,var(--h3-dim) 50%,transparent 50%);
+  background-position:calc(100% - 12px) 9px,calc(100% - 8px) 9px;
+  background-size:4px 4px,4px 4px; background-repeat:no-repeat; }
+.gcast-lanes-hd .tools select.gcast-runmode:focus {
+  outline:none; border-color:var(--h3-accent); }
+.gcast-lanes-hd .tools select.gcast-runmode option {
+  color:var(--h3-txt); background:var(--h3-well); }
+/* 三采方式切换钮（20261117 方案甲 P3）：复用阶段分段控件外壳与选中语言，
+   五字标签（视频口超分/潜空间放大）比阶段钮宽，min-width 放到 66px 防截断。 */
+.gcast-lanes-hd .tools .gcast-s3mode-seg button.gcast-s3mode-btn { min-width:66px; }
 .gcast-lanes-hd .tools button.gcast-export-btn {
   display:inline-flex; align-items:center; gap:5px; }
 /* （导出按钮"未就绪"小黄点徽标样式已于 20261012 应要求移除。） */
@@ -1427,4 +1446,61 @@ export const CSS = `
 .gcast-go-ic { font-size:12px; }
 
 @media (prefers-reduced-motion: reduce) { .gcast * { transition:none !important; } }
+
+/* ===== 阶段拓扑镜像（对齐高保真原型） ===== */
+.bzf-stage-wrap { width:100%; position:relative; }
+.bzf-stage-wrap[data-mode="fallback"] { display:none; }
+.topo-head { display:flex; align-items:center; gap:9px; font-size:12.5px;
+  font-weight:600; margin-bottom:8px; }
+.topo-head .pill { margin-left:auto; font-size:10.5px; padding:3px 9px;
+  border-radius:99px; background:var(--h3-accent-dim); color:var(--h3-accent); font-weight:500; }
+.topo-head .pill.fb { background:rgba(255,255,255,.08); color:var(--h3-dim); }
+.topo-head .pill.warn { background:rgba(255,159,10,.14); color:#FF9F0A; }
+.topo-note { font-size:11px; color:#FF9F0A; margin:-2px 0 6px; line-height:1.5; }
+.topo-wrap { background:var(--h3-well); border:1px solid var(--h3-line);
+  border-radius:10px; overflow-x:auto; }
+svg.topo { display:block; min-width:100%; }
+.topo .node-rect { fill:#2c2c32; stroke:rgba(255,255,255,.18); stroke-width:1;
+  stroke-dasharray:5 4; }
+.topo .node-rect.video { fill:#273242; stroke:rgba(88,209,255,.55); stroke-dasharray:none; }
+.topo g.tnode { cursor:pointer; }
+.topo g.tnode.sel .node-rect { stroke:var(--h3-accent); stroke-width:1.6; }
+.topo g.tnode.off { opacity:.4; }
+.topo .tname { font-size:12.5px; font-weight:600; fill:var(--h3-txt); }
+.topo .tkind { font-size:10px; fill:var(--h3-label); }
+.topo .tfrom { font-size:9.5px; fill:var(--h3-dim); }
+.topo .edge { fill:none; stroke:rgba(255,255,255,.28); stroke-width:1.4; }
+.topo .edge.video { stroke:var(--h3-accent); }
+.topo .elabel { font-size:9px; font-weight:600; fill:var(--h3-dim); }
+.topo .elabel.video { fill:var(--h3-accent); }
+.topo .sw { fill:#54545b; }
+.topo .sw.on { fill:var(--gc-wave); }
+.topo .sw-knob { fill:#fff; }
+.topo .stat-dot { fill:var(--h3-label); }
+.topo .stat-dot.cached { fill:var(--gc-wave); }
+.topo .stat-dot.running { fill:var(--h3-accent); }
+
+/* 主运行按钮：文案随拓扑开关动态变化，范围一眼可见 */
+.bzf-actions { display:flex; gap:10px; margin-top:10px; }
+.bzf-run { flex:1; border:none; cursor:pointer; background:var(--h3-accent);
+  color:#08131a; font-size:13px; font-weight:600; padding:10px 16px;
+  border-radius:10px; font-family:inherit; }
+.bzf-run:hover:not(:disabled) { filter:brightness(1.08); }
+.bzf-run:active:not(:disabled) { filter:brightness(.95); }
+.bzf-run:disabled { background:var(--h3-raise); color:var(--h3-label); cursor:not-allowed; }
+
+/* 关闭阶段运行前确认：罩在拓扑区上，不全屏打断 */
+.bzf-mask { position:absolute; inset:0; z-index:30; display:none;
+  align-items:center; justify-content:center; background:rgba(0,0,0,.55);
+  border-radius:10px; }
+.bzf-mask.open { display:flex; }
+.bzf-dialog { background:var(--h3-raise); border:1px solid var(--h3-line);
+  border-radius:12px; max-width:340px; width:calc(100% - 32px); padding:18px; }
+.bzf-dialog h3 { font-size:14px; font-weight:600; margin:0 0 8px; }
+.bzf-dialog p { font-size:12px; color:var(--h3-dim); line-height:1.6; margin:0 0 14px; }
+.bzf-d-actions { display:flex; gap:10px; }
+.bzf-d-actions button { flex:1; padding:9px; border-radius:8px; font-size:12.5px;
+  border:none; cursor:pointer; font-family:inherit; }
+.bzf-d-cancel { background:var(--h3-line); color:var(--h3-txt); }
+.bzf-d-ok { background:var(--h3-accent); color:#08131a; font-weight:600; }
 `;
