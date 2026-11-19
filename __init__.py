@@ -133,6 +133,15 @@ except Exception as e:
     print(f"⚠️ [班长全家桶] 可视化加载器加载失败: {e}")
     Vis_Cls, Vis_Names = {}, {}
 
+# 6.5 视频加载与信息（自 VHS 迁移版；注册键/类名/类型独立，可与 VHS 插件并存）
+try:
+    from .nodes import banzhang_load_video
+    LoadVid_Cls = getattr(banzhang_load_video, 'NODE_CLASS_MAPPINGS', {})
+    LoadVid_Names = getattr(banzhang_load_video, 'NODE_DISPLAY_NAME_MAPPINGS', {})
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 视频加载节点加载失败: {e}")
+    LoadVid_Cls, LoadVid_Names = {}, {}
+
 # 7. 图像编辑API
 try:
     from .nodes import banzhang_image_api
@@ -324,6 +333,15 @@ try:
 except Exception as e:
     print(f"⚠️ [班长全家桶] H3 文案台加载失败: {e}")
     Desk_Cls, Desk_Names = {}, {}
+
+# 21a-2-2. 提示词英文化（复用文案台改写管线：文本 → 专业英文提示词）
+try:
+    from .nodes import banzhang_prompt_en
+    PromptEN_Cls = getattr(banzhang_prompt_en, 'NODE_CLASS_MAPPINGS', {})
+    PromptEN_Names = getattr(banzhang_prompt_en, 'NODE_DISPLAY_NAME_MAPPINGS', {})
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 提示词英文化加载失败: {e}")
+    PromptEN_Cls, PromptEN_Names = {}, {}
 
 # 21a-3. H3 AI 制片中枢（N1 制片中枢 / N2a 资产入库 / N2b 资产架 / N3 DAG编排器 / N4 段尾归位）
 try:
@@ -690,6 +708,7 @@ NODE_CLASS_MAPPINGS = {
     **LocalEngine_Cls,
     **Sub_Cls,
     **Vis_Cls,
+    **LoadVid_Cls,
     **API_Cls,
     **Terminate_Cls,
     **Splitter_Cls,
@@ -729,6 +748,7 @@ NODE_CLASS_MAPPINGS = {
     **RIFE_Cls,
     **Clip_Cls,
     **Desk_Cls,
+    **PromptEN_Cls,
     **LegacyCast_Cls,
     **Producer_Cls,
     **Pin_Cls,
@@ -751,6 +771,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **LocalEngine_Names,
     **Sub_Names,
     **Vis_Names,
+    **LoadVid_Names,
     **API_Names,
     **Terminate_Names,
     **Splitter_Names,
@@ -790,6 +811,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **RIFE_Names,
     **Clip_Names,
     **Desk_Names,
+    **PromptEN_Names,
     **LegacyCast_Names,
     **Producer_Names,
     **Pin_Names,
@@ -973,6 +995,47 @@ try:
             print(f"   🎬 ffmpeg: 自动下载没启动起来：{type(_e).__name__}: {_e}")
 except Exception:
     pass
+
+# 49. 🎯 主体重绘（裁剪/贴回）：视频主体局部重绘两件套，算法移植自
+#     drozbay/MaskVidExperiments（GPLv3）。裁剪端合并原包 Mask Cleanup +
+#     Subject Crop，遮噪清理参数固化；两节点夹在采样/放大链路两侧使用。
+try:
+    from .nodes import banzhang_subject_redraw_crop, banzhang_subject_redraw_uncrop
+    NODE_CLASS_MAPPINGS.update(banzhang_subject_redraw_crop.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_subject_redraw_crop.NODE_DISPLAY_NAME_MAPPINGS)
+    NODE_CLASS_MAPPINGS.update(banzhang_subject_redraw_uncrop.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_subject_redraw_uncrop.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 主体重绘节点加载失败: {e}")
+
+# 50. 🧬 H3 AV打包·哑音频：把纯视频 latent 打包成 H3 双流嵌套 latent（视频+哑音频），
+#     噪声掩码归一并随帧网格补齐。手工工作流里 Set Latent Noise Mask → 本节点 → KSampler，
+#     否则 H3 forward 取音频流必报 index 1 out of bounds。
+try:
+    from .nodes import banzhang_h3_av_pack
+    NODE_CLASS_MAPPINGS.update(banzhang_h3_av_pack.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_h3_av_pack.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] H3 AV打包节点加载失败: {e}")
+
+# 51. 🎯 H3 参考图条件：官方「MiniMax H3 参考生成视频」傻瓜版——参考图 1~3 张 +
+#     接目标 latent 自动读画布尺寸（不手填宽高帧数），输出带参考条件的正条件，
+#     latent 直通串联。供参考图驱动的角色替换工作流使用。
+try:
+    from .nodes import banzhang_h3_ref_cond
+    NODE_CLASS_MAPPINGS.update(banzhang_h3_ref_cond.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_h3_ref_cond.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] H3 参考图条件节点加载失败: {e}")
+
+# 52. 🎯 H3 角色替换采样：裁剪→编码→潜空间遮罩→AV打包→参考图条件 一体机，
+#     角色替换工作流的傻瓜式采样准备（帧数自动、画布自动、尺寸永不炸）。
+try:
+    from .nodes import banzhang_h3_replace_sample
+    NODE_CLASS_MAPPINGS.update(banzhang_h3_replace_sample.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_h3_replace_sample.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] H3 角色替换采样节点加载失败: {e}")
 
 # 启动期兼容守卫：核心与本机 comfy-aimdo 接口对不上就同步补装。
 # 放在节点列表之后、就绪之前 —— 万一要装包，用户先看到「成功加载 N 个节点」，

@@ -216,7 +216,9 @@ function install() {
             + (gscoped.partialExecutionTargets
               ? " 出片口=" + gscoped.partialExecutionTargets.join(",") : " (整图)")
             + (gscoped.rewired.length
-              ? " 改接线=" + gscoped.rewired.map((r) => "#" + r.node + "←总线口" + r.port).join(",")
+              ? " 改接线=" + gscoped.rewired.map((r) => r.live
+                  ? "#" + r.node + "←#" + r.to[0] + "口" + r.to[1] + "(活源)"
+                  : "#" + r.node + "←总线口" + r.port).join(",")
               : ""));
         } else {
         /* 无组旧图走旧阶段编排：范围来自 ui.runMode / ui.stage / ui.s3Mode。

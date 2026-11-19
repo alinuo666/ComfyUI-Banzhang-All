@@ -171,10 +171,10 @@ app.registerExtension({
       node.properties = node.properties || {};
 
       const wMap = {};
-      // 提示词与三个数值参数都由面板自绘，原生 widget 收起来只留值
+      // 提示词与数值参数都由面板自绘，原生 widget 收起来只留值
       const HIDDEN_WIDGETS = ["project_data", "sam3_prompt",
-        "detail_gain", "sam3_threshold", "mask_dilate", "steps", "denoise",
-        "feather", "upscale", "upscale_model"];
+        "sam3_threshold", "steps", "denoise", "feather",
+        "裁剪模式", "包边比例", "放大百万像素"];
       function bindWidgets() {
         for (const name of HIDDEN_WIDGETS) {
           const w = (node.widgets || []).find((x) => x.name === name);
@@ -201,31 +201,6 @@ app.registerExtension({
 
       // ── 参数条：阈值 / 外扩 / 强度（原生 widget 已隐藏，这里代理）──
       const numInputs = {};
-      const selInputs = {};
-      // [下拉] 放大模型这类选项型参数：原生 combo 收起，面板里给一个 select
-      function selField(parent, label, name, options) {
-        const wrap = el("label", "bz-ff-p", parent);
-        el("span", "", wrap).textContent = label;
-        const sel = document.createElement("select");
-        for (const o of options) {
-          const op = document.createElement("option");
-          op.value = o;
-          op.textContent = String(o).replace(/\.(pth|safetensors)$/i, "");
-          sel.appendChild(op);
-        }
-        wrap.appendChild(sel);
-        selInputs[name] = sel;
-        sel.addEventListener("change", () => {
-          const w = wMap[name];
-          if (w && w.value !== sel.value) {
-            w.value = sel.value;
-            node.graph?.change?.();
-          }
-        });
-        ["pointerdown", "keydown", "keyup", "wheel"].forEach((ev) =>
-          sel.addEventListener(ev, (e) => e.stopPropagation()));
-        return sel;
-      }
       function numField(parent, label, name, min, max, step) {
         const wrap = el("label", "bz-ff-p", parent);
         el("span", "", wrap).textContent = label;
@@ -265,23 +240,20 @@ app.registerExtension({
         return inp;
       }
       function paramsFromWidgets() {
-        for (const name of ["detail_gain", "sam3_threshold", "mask_dilate",
-                            "steps", "denoise", "feather", "upscale"]) {
+        for (const name of ["sam3_threshold", "steps", "denoise", "feather",
+                            "包边比例", "放大百万像素"]) {
           const w = wMap[name];
           const inp = numInputs[name];
           if (!w || !inp) continue;
           const step = parseFloat(inp.step) || 1;
           inp.value = step < 1 ? Number(w.value).toFixed(2) : String(Math.round(Number(w.value)));
         }
-        const sel = selInputs.upscale_model;
-        const wsel = wMap.upscale_model;
-        if (sel && wsel) sel.value = String(wsel.value);
       }
       // [存档自愈] widget 值按顺序存档：增删参数后旧工程会整排错位（上轮
       // blend 拿到 384 就是这原因），超出 min/max 的在这里复位成默认，
       // 免得执行期被后端校验拦下。
-      const WIDGET_DEFAULTS = { detail_gain: 1, sam3_threshold: 0.35,
-        mask_dilate: 24, steps: 6, denoise: 0.3, feather: 24, upscale: 3 };
+      const WIDGET_DEFAULTS = { "sam3_threshold": 0.35, steps: 6, denoise: 0.3,
+        feather: 24, "包边比例": 1.4, "放大百万像素": 1.0 };
       function sanitizeWidgets() {
         let changed = false;
         for (const name of Object.keys(WIDGET_DEFAULTS)) {
@@ -295,30 +267,18 @@ app.registerExtension({
             changed = true;
           }
         }
-        const sel = selInputs.upscale_model, wsel = wMap.upscale_model;
-        if (sel && wsel) {
-          const vals = Array.from(sel.options).map((o) => o.value);
-          if (!vals.includes(String(wsel.value))) {
-            wsel.value = vals[0];
-            changed = true;
-          }
-        }
         paramsFromWidgets();
         if (changed) node.graph?.change?.();
       }
 
       const params = el("div", "bz-ff-params", root);
       const row1 = el("div", "bz-ff-prow", params);
-      numField(row1, "细节", "detail_gain", 0, 2, 0.05);
-      numField(row1, "放大", "upscale", 1, 4, 0.5);
+      numField(row1, "包边", "包边比例", 1, 3, 0.05);
+      numField(row1, "像素", "放大百万像素", 0, 16, 0.05);
       numField(row1, "阈值", "sam3_threshold", 0.05, 0.95, 0.05);
-      numField(row1, "外扩", "mask_dilate", 0, 96, 4);
       numField(row1, "步数", "steps", 1, 30, 1);
       numField(row1, "降噪", "denoise", 0.05, 1, 0.05);
       numField(row1, "羽化", "feather", 0, 64, 4);
-      const modelOpts = (wMap.upscale_model && wMap.upscale_model.options
-        && wMap.upscale_model.options.values) || ["（不用模型）"];
-      selField(row1, "模型", "upscale_model", modelOpts);
       sanitizeWidgets();
 
       // ── 人脸缩略图卡片 ─────────────────────────────────────────
@@ -450,7 +410,6 @@ app.registerExtension({
         faces.forEach((f, i) => {
           const thumb = el("div", "bz-ff-thumb", grid);
           el("span", "bz-ff-idx", thumb).textContent = String(i + 1);
-          const dilate = Math.round(Number(wMap.mask_dilate?.value ?? 0));
           const half = (src, label, isAfter) => {
             const d = el("div", "bz-ff-half", thumb);
             if (src) {
@@ -467,10 +426,13 @@ app.registerExtension({
               el("div", "none", d).textContent = "—";
             }
             el("span", "tag", d).textContent = label;
-            // [外扩可视化] 后图在外扩>0 时蓝色描边 + 徽章，修复范围状态一眼可见
-            if (isAfter && dilate > 0) {
-              d.classList.add("bz-ff-dilate");
-              el("span", "bz-ff-badge", d).textContent = "外扩 " + dilate;
+            // [包边可视化] 后图在包边>1 时蓝色描边 + 徽章，修复范围状态一眼可见
+            if (isAfter) {
+              const cs = Math.round(Number(wMap["包边比例"]?.value ?? 1));
+              if (cs > 1) {
+                d.classList.add("bz-ff-dilate");
+                el("span", "bz-ff-badge", d).textContent = "包边 ×" + cs;
+              }
             }
           };
           half(f.thumb, "前", false);

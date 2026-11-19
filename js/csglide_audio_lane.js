@@ -1147,11 +1147,30 @@ export function mountAudioLane(opts = {}) {
     }
   }
 
-  /* 段数按净长算：ceil 之后若余数不足 0.05 秒，并回上一段 —— 与后端
-     「有效音频不足 0.05 秒不给驱动」同一把尺子，别建注定无驱动的尾段。 */
+  /* 段数按**净推进**算：首段铺 segFrames 毛帧，续接段每段只往前推进
+     「毛帧 − 承接帧」。旧公式拿整首除每段毛秒数，每段被承接吃掉的
+     二三十帧没人补 —— 段数越多欠得越多，尾部音频没有任何一段承接
+     （20261119 用户实测：58s 歌、每段 10 秒只排 6 段，铺到 1348 帧
+     = 56.17 秒就断，末尾两句歌词没了）。
+     承接帧优先取档案里第一条续接段的 trim_frames（断链记 0，与档案
+     同口径）；档案还没有续接段时按 22 —— 与 csglide_cast_shots.js
+     新段默认 cont.frames 同一个值。ceil 后余量不足 0.05 秒并回上一段
+     —— 与后端「有效音频不足 0.05 秒不给驱动」同一把尺子。 */
   function countFor(dur) {
-    let n = Math.max(1, Math.ceil(dur / segSec - 1e-9));
-    if (n > 1 && dur - (n - 1) * segSec < 0.05) n -= 1;
+    const f = fpsOf();
+    const budget = Math.max(1, Math.round(dur * f));
+    const g = segFrames();
+    if (budget <= g) return 1;
+    let t = 22;
+    for (const r of clipsOf()) {
+      if ((Number(r.clip_from) || 0) > 0) {
+        t = Math.max(0, Number(r.trim_frames) || 0);
+        break;
+      }
+    }
+    const step = Math.max(1, g - t);
+    let n = 1 + Math.ceil((budget - g) / step);
+    if (n > 1 && (budget - (g + (n - 2) * step)) / f < 0.05) n -= 1;
     return n;
   }
 
@@ -1300,7 +1319,9 @@ export function mountAudioLane(opts = {}) {
         addBlock(t, r, j["峰值"] || []);
       }
       paintMute(t);
-      if (shortBy > 0.01) {
+      // 阈值 0.8 秒：末段向上吸格（20261119 换向，画面迁就音频）本来就允许
+      // ≤16 帧（0.67 秒）静帧尾，那属正常收尾不该报警；真短一大截才提示。
+      if (shortBy > 0.8) {
         tip(`音频比全片短 ${shortBy.toFixed(2)} 秒：最后一段尾部没有声音。`
             + `换条更长的音频，或把「每段秒数」调小即可铺满。`);
       }
@@ -1362,7 +1383,9 @@ export function mountAudioLane(opts = {}) {
   }
 
   /* 拖入音频 = 一条龙：按音频长度排段数 → 按段切 → 每段混成一条驱动。
-     段数是**算出来**的（ceil 音频时长 / 每段秒数），不够就自动补段 —— 拖一首
+     段数是**算出来**的（按净长：首段装 segFrames，续接段每段只往前推进
+     segFrames−承接帧；20261119 前误用毛长 ceil，每段少排承接帧那么多音频，
+     58s 实测丢尾 1.83 秒），不够就自动补段 —— 拖一首
      3 分钟的歌进来，18 段自己出来，不用先手工数段。
      已有段只改净长、**绝不删段**：多出来的段不在音频范围内，保留（里面可能
      已经有素材）。第二首及以后的轨不改段数 —— 全片长度只由主音轨定。

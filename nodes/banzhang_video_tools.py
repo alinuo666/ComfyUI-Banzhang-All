@@ -2717,48 +2717,107 @@ class BanZhang_LoadLyricsFile:
 # ==========================================
 # 图像对比节点
 # ==========================================
+# 旧工作流里存的英文档位值，回填时自动映射，不让老工程失效
+_CMP_MODE_LEGACY = {"hstack": "左右拼接", "vstack": "上下拼接", "diff": "差异图"}
+
+
 class Banzhang_ImageCompare:
+
+    DESCRIPTION = (
+        "对比两张图 / 两组帧批次：节点面板提供 A/B 叠图＋可拖分隔滑杆，\n"
+        "帧批次（视频抽帧）另有帧滑条可逐帧对比。\n"
+        "输出端口仍按所选模式给拼接图或差异图，可接下游保存。\n"
+        "尺寸不一致时 B 自动缩放到 A 的尺寸；批次数不一致时单张自动广播、双多张取较短。"
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image_a": ("IMAGE",),
-                "image_b": ("IMAGE",),
-                "mode": (["hstack", "vstack", "diff"], {"default": "hstack"}),
+                "🖼️ 图像A": ("IMAGE", {
+                    "tooltip": "要对比的第一张图（或帧批次），显示在分隔滑杆左侧。"}),
+                "🖼️ 图像B": ("IMAGE", {
+                    "tooltip": "要对比的第二张图（或帧批次），显示在分隔滑杆右侧。\n"
+                               "尺寸与 A 不一致时自动缩放到 A 的尺寸。"}),
+                "🔀 对比模式": (["左右拼接", "上下拼接", "差异图"], {
+                    "default": "左右拼接",
+                    "tooltip": "输出端口的拼图方式：左右 / 上下拼接，或像素差异图。\n"
+                               "不影响面板里的滑杆对比。"}),
             },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("result",)
+    RETURN_NAMES = ("🖼️ 对比结果",)
+    OUTPUT_NODE = True
     FUNCTION = "compare_images"
     CATEGORY = "👨‍🏫班长/图像处理"
 
-    def compare_images(self, image_a, image_b, mode):
-        if image_a is None or image_b is None:
+    @torch.no_grad()
+    def compare_images(self, **kwargs):
+        # 端口名带 emoji 不能做形参，同视频合并走 **kwargs 按键名取
+        图像A = kwargs.get("🖼️ 图像A")
+        图像B = kwargs.get("🖼️ 图像B")
+        对比模式 = kwargs.get("🔀 对比模式", "左右拼接")
+        unique_id = kwargs.get("unique_id")
+        if 图像A is None or 图像B is None:
             return (None,)
+        对比模式 = _CMP_MODE_LEGACY.get(对比模式, 对比模式)
 
-        if len(image_a.shape) == 3:
-            image_a = image_a.unsqueeze(0)
-        if len(image_b.shape) == 3:
-            image_b = image_b.unsqueeze(0)
+        if len(图像A.shape) == 3:
+            图像A = 图像A.unsqueeze(0)
+        if len(图像B.shape) == 3:
+            图像B = 图像B.unsqueeze(0)
 
-        if image_a.shape[1:] != image_b.shape[1:]:
-            image_b = torch.nn.functional.interpolate(
-                image_b.permute(0, 3, 1, 2),
-                size=(image_a.shape[1], image_a.shape[2]),
+        # 批次对齐：单张广播到对方批次数；双多张取较短，避免 torch.cat 直接崩
+        na, nb = 图像A.shape[0], 图像B.shape[0]
+        if na != nb:
+            if na == 1:
+                图像A = 图像A.expand(nb, -1, -1, -1)
+            elif nb == 1:
+                图像B = 图像B.expand(na, -1, -1, -1)
+            else:
+                n = min(na, nb)
+                图像A, 图像B = 图像A[:n], 图像B[:n]
+
+        if 图像A.shape[1:] != 图像B.shape[1:]:
+            图像B = torch.nn.functional.interpolate(
+                图像B.permute(0, 3, 1, 2),
+                size=(图像A.shape[1], 图像A.shape[2]),
                 mode='bilinear',
                 align_corners=False,
             ).permute(0, 2, 3, 1)
 
-        if mode == "hstack":
-            result = torch.cat([image_a, image_b], dim=2)
-        elif mode == "vstack":
-            result = torch.cat([image_a, image_b], dim=1)
+        if 对比模式 == "上下拼接":
+            result = torch.cat([图像A, 图像B], dim=1)
+        elif 对比模式 == "差异图":
+            result = torch.abs(图像A - 图像B)
         else:
-            result = torch.abs(image_a - image_b)
+            result = torch.cat([图像A, 图像B], dim=2)
 
-        return (result,)
+        # 面板图源：存临时 JPEG（比 PNG 小一个量级），前端只按需加载当前帧那一对。
+        # 目录按节点 id 隔离、文件名按帧序号覆盖，反复运行不堆积垃圾文件。
+        from PIL import Image
+        subfolder = f"bz_compare/{unique_id or 0}"
+        out_dir = os.path.join(folder_paths.get_temp_directory(), subfolder)
+        os.makedirs(out_dir, exist_ok=True)
+
+        def _存帧(t, prefix):
+            names = []
+            arr = (t.clamp(0, 1) * 255).to(torch.uint8).cpu().numpy()
+            for i, frame in enumerate(arr):
+                name = f"{prefix}_{i:05d}.jpg"
+                Image.fromarray(frame).save(os.path.join(out_dir, name), quality=90)
+                names.append(name)
+            return names
+
+        ui = {"bz_compare": {
+            "a": _存帧(图像A, "a"),
+            "b": _存帧(图像B, "b"),
+            "subfolder": subfolder,
+            "type": "temp",
+        }}
+        return {"ui": ui, "result": (result,)}
 
 
 # ==========================================

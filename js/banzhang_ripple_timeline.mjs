@@ -8,37 +8,18 @@ export const DURATION_OPTIONS = Array.from({ length: (MAX_DURATION_FRAMES - 5) /
     return [frames, `${frames} 帧 · ${(frames / FPS).toFixed(2)} 秒`];
 });
 
-// Notice substantial reshaping by an external editor.
-export function aspectMismatch(imageWidth, imageHeight, canvas) {
-    if (!canvas || !(imageWidth > 0 && imageHeight > 0)) return false;
-    return Math.abs((imageWidth / imageHeight) / (canvas.width / canvas.height) - 1) > 0.05;
-}
-
 export function durationFrames(seconds) {
     const value = Number(seconds);
     return Number.isFinite(value) ? Math.max(5, 5 + 17 * Math.round((value * FPS - 5) / 17)) : 107;
 }
 
-// Resize a window around its opposite edge, leaving anchors on their source frames.
+// Resize a window around its opposite edge.
 export function resizeWindow(available, start, length, side, frame) {
     const end = start + length;
     const limit = side === "left" ? end : available - start;
     const wanted = side === "left" ? end - frame : frame - start;
     const count = Math.min(MAX_DURATION_FRAMES, Math.max(5, durationFrames(wanted / FPS)), Math.max(5, 5 + 17 * Math.floor((limit - 5) / 17)));
     return { start: side === "left" ? end - count : start, length: count };
-}
-
-export function retainSourceFrames(markers, oldStart, newStart, length) {
-    const used = new Set();
-    const result = markers.map((marker) => ({ ...marker, frame: oldStart + marker.frame - newStart }));
-    for (const marker of result) if (marker.frame >= 0 && marker.frame < length) used.add(marker.frame);
-    for (const marker of result) {
-        if (marker.frame >= 0 && marker.frame < length) continue;
-        const frame = freeFrame([...used], Math.min(length - 1, Math.max(0, marker.frame)), length);
-        marker.frame = frame >= 0 ? frame : Math.min(length - 1, Math.max(0, marker.frame));
-        used.add(marker.frame);
-    }
-    return result;
 }
 
 export function parseCrop(value) {
@@ -49,11 +30,6 @@ export function parseCrop(value) {
     const width = Math.min(1 - x, Number(crop[2])), height = Math.min(1 - y, Number(crop[3]));
     if (width <= 0 || height <= 0) return [0, 0, 1, 1];
     return [x, y, width, height].map((v) => Number(v.toFixed(8)));
-}
-
-export function cropMatches(a, b) {
-    const left = parseCrop(a), right = parseCrop(b);
-    return left.every((value, i) => Math.abs(value - right[i]) < 1e-6);
 }
 
 export function cropForAspect(sourceAspect, targetAspect) {
@@ -127,15 +103,8 @@ export function timecode(seconds) {
     return `${String(minutes).padStart(2, "0")}:${rest.toFixed(2).padStart(5, "0")}`;
 }
 
-export function describe(start, length, edit) {
-    return `${timecode((start + edit) / FPS)} · frame ${edit + 1} of ${length} · ` +
-        `window ${timecode(start / FPS)}–${timecode((start + length) / FPS)} (${(length / FPS).toFixed(2)} s)`;
-}
-
-// What a press at timeline x hits: the marker (within slop), the window body, or empty track.
-export function hitTest(x, layout, start, length, edit, slop = 7) {
-    const markerX = layout.x(start + edit + 0.5);
-    if (Math.abs(x - markerX) <= slop) return "marker";
+// What a press at timeline x hits: the window body, or empty track.
+export function hitTest(x, layout, start, length) {
     if (x >= layout.x(start) && x <= layout.x(start + length)) return "window";
     return "track";
 }
@@ -155,89 +124,4 @@ export function tickStep(totalSeconds, width) {
     const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
     const wanted = (totalSeconds / Math.max(1, width)) * 60;
     return steps.find((step) => step >= wanted) ?? 1200;
-}
-
-// Marker IDs stay stable while the batch remains in time order.
-export function parseMarkers(json, length) {
-    let items = [];
-    try { items = json ? JSON.parse(json) : []; } catch (_) { items = []; }
-    if (!Array.isArray(items) || !items.length) items = [{ id: 1, frame: 0 }];
-    const out = []; const seen = new Set(); const ids = new Set();
-    for (const item of items) {
-        const raw = typeof item === "object" && item ? item.frame : item;
-        let frame = Math.min(Math.max(0, Math.round(Number(raw) || 0)), Math.max(0, length - 1));
-        if (seen.has(frame)) { const free = freeFrame([...seen], frame, length); if (free >= 0) frame = free; }
-        seen.add(frame);
-        let id = item?.id;
-        if (!Number.isInteger(id) || id < 1 || ids.has(id)) { id = 1; while (ids.has(id)) id++; }
-        ids.add(id);
-        out.push({ id, frame, edited: (item && item.edited) || "", edited_at: item && Number.isFinite(item.edited_at) ? item.edited_at : null,
-            ...(item?.edited_crop != null ? { edited_crop: parseCrop(item.edited_crop) } : {}),
-            ...(item?.edited_source ? { edited_source: { video: String(item.edited_source.video ?? ""), version: String(item.edited_source.version ?? "") } } : {}) });
-    }
-    out.sort((a, b) => a.frame - b.frame);
-    return out;
-}
-
-// Anchor slots are numbered by marker ID and always contiguous from 1, so output slot indices keep
-// matching the backend's anchor_N outputs. Clip / From Frames show anchor_1 up to the highest marker ID
-// and keep any linked anchor, so removing a marker never drops a connection.
-export function anchorOutputCount(markerIds, linkedIds, max) {
-    if (!(max >= 1)) return 0;
-    return Math.min(max, Math.max(1, ...markerIds, ...linkedIds));
-}
-
-// Apply shows edited_anchor_1 up to its source's highest marker ID. When the source is unknown (not
-// connected, or behind a subgraph) it grows like ComfyUI's Autogrow inputs: connecting the last input
-// adds an empty one below it. Connected inputs always stay.
-export function anchorInputCount(connectedIds, sourceMarkerIds, max) {
-    if (!(max >= 1)) return 0;
-    const connected = Math.max(0, ...connectedIds);
-    const wanted = sourceMarkerIds ? Math.max(connected, ...sourceMarkerIds) : connected + 1;
-    return Math.min(max, Math.max(1, wanted));
-}
-
-// One marker on the window's first frame (ripple_core.default_markers).
-export function defaultMarkers() {
-    return [{ id: 1, frame: 0, edited: "", edited_at: null }];
-}
-
-// A free frame for a new marker: the preferred frame if free, else the nearest free one, else -1.
-export function freeFrame(frames, preferred, length) {
-    const taken = new Set(frames);
-    for (let d = 0; d < length; d++) {
-        for (const k of [preferred + d, preferred - d]) if (k >= 0 && k < length && !taken.has(k)) return k;
-    }
-    return -1;
-}
-
-// Where to put a new marker: the middle of the widest gap between existing markers / window edges.
-export function suggestFrame(frames, length) {
-    const points = [-1, ...[...frames].sort((a, b) => a - b), length];
-    let best = 0, at = Math.floor(length / 2);
-    for (let i = 1; i < points.length; i++) {
-        const gap = points[i] - points[i - 1];
-        if (gap > best) { best = gap; at = Math.floor((points[i] + points[i - 1]) / 2); }
-    }
-    return freeFrame(frames, Math.max(0, Math.min(length - 1, at)), length);
-}
-
-// Index of the marker under x (closest within slop), or -1.
-export function hitMarker(x, layout, start, frames, slop = 7) {
-    let best = -1, distance = slop + 1;
-    frames.forEach((frame, index) => {
-        const d = Math.abs(x - layout.x(start + frame + 0.5));
-        if (d <= slop && d < distance) { best = index; distance = d; }
-    });
-    return best;
-}
-
-// Move one marker to `frame` without landing on another marker (stops next to it).
-export function moveMarker(frames, index, frame, length) {
-    const others = new Set(frames.filter((_, i) => i !== index));
-    let target = Math.min(Math.max(0, Math.round(frame)), length - 1);
-    if (!others.has(target)) return target;
-    const step = target >= frames[index] ? -1 : 1;
-    while (others.has(target) && target >= 0 && target < length) target += step;
-    return target >= 0 && target < length ? target : frames[index];
 }

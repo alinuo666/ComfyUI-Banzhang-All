@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""🎬 H3 涟漪 · 选片段：从视频取一段，标出要改的帧，供外部编辑器使用。"""
+"""🎬 H3 涟漪 · 选片段：从视频里选一段，输出官方 VIDEO，供生成与保存链路使用。"""
 
 from __future__ import annotations
 
@@ -15,19 +15,21 @@ from ..core import banzhang_ripple_video as vd
 class BZ_RippleClip:
     CATEGORY = st.CATEGORY
     FUNCTION = "select"
-    RETURN_TYPES = ("IMAGE", st.RIPPLE_TYPE, "IMAGE", "AUDIO") + ("IMAGE",) * st.MAX_ANCHORS
-    RETURN_NAMES = ("frames_to_edit", "ripple", "source_window", "audio") + st.ANCHOR_NAMES
+    RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("video", "source_window", "audio", "first_frame", "last_frame")
     OUTPUT_TOOLTIPS = (
-        "按时间顺序排列的待编辑帧，尺寸与 H3 生成尺寸一致。",
-        "窗口画面、编辑帧标记与几何信息，交给「应用编辑」和「输出成片」。",
+        "选中片段的官方 VIDEO（带原声，可直接接「保存视频」）；「应用编辑」「输出成片」也接这里。",
         "窗口原始画面，已按生成尺寸准备好。",
         "这段窗口的原声音频；源片无音轨时为空。",
-    ) + tuple(st.anchor_tooltip(i) for i in range(1, st.MAX_ANCHORS + 1))
+        "选区的第一帧（内容区，无补边）。",
+        "选区的最后一帧——时间轴手动设置那段的末尾，不是整部源片的最后一帧。",
+    )
     DESCRIPTION = (
-        "选一段视频，在时间轴上拖动蓝色窗口决定要生成的范围，把标记拖到想修改的那一帧。"
-        "下载该帧、在任何图片编辑器里改好，再上传、拖入或粘贴到对应卡片上。"
-        "需要多个视角时可加标记，每个标记有独立的锚点输出。"
-        "方向键移动标记，Shift+方向键移动窗口，Tab 切换标记，Ctrl+V 粘贴编辑图。"
+        "选一段视频，在时间轴上拖动蓝色窗口决定要生成的范围，Shift+方向键也能挪窗口。"
+        "点击预览画面即可播放 / 暂停选区（带原声，音画同步）。"
+        "输出口是这段选区的官方 VIDEO：可直连「保存视频」，或接「应用编辑」组成 H3 生成条件。"
+        "另有首帧 / 尾帧两个图像口，取的都是选区窗口的头尾。"
+        "「原片裁剪」选手动裁剪后，预览画面上会出现可拖动的裁剪框。"
     )
 
     @classmethod
@@ -39,11 +41,9 @@ class BZ_RippleClip:
                 "duration": ("FLOAT", {"default": rc.DEFAULT_DURATION, "min": 5 / rc.FPS, "max": 150.0,
                                        "step": 0.01, "tooltip": "片段长度（秒，按 24fps 计算），自动对齐到 H3 的 17n+5 帧网格。"}),
                 "megapixels": ("FLOAT", {"default": rc.DEFAULT_MEGAPIXELS, "min": 0.001, "max": 268.435456,
-                                         "step": 0.01, "tooltip": "可见画面的百万像素数，默认 0.25。"}),
+                                         "step": 0.01, "tooltip": "输出画面的百万像素数，默认 0.25。"}),
                 "window_start": ("INT", {"default": 0, "min": 0, "max": 10_000_000,
                                  "tooltip": "窗口在 24fps 时间轴上的起始帧，由下方时间轴自动设置。"}),
-                "markers": ("STRING", {"default": rc.DEFAULT_MARKERS_JSON, "multiline": False,
-                            "tooltip": "带固定编号的编辑帧标记，由时间轴面板管理，不需手填。"}),
             },
             "optional": st.framing_inputs(),
         }
@@ -65,36 +65,28 @@ class BZ_RippleClip:
         stat = vd.video_path(video).stat()
         return (video, stat.st_size, stat.st_mtime_ns, tuple(sorted(kwargs.items())))
 
-    def select(self, video, duration, megapixels, window_start, markers, crop="", allow_upscale=False,
+    def select(self, video, duration, megapixels, window_start, crop="", allow_upscale=False,
                resize_method="lanczos", output_width=0, output_height=0):
         path = vd.video_path(video)
         info = vd.probe(path)
-        start, frames_n, notes = rc.fit_window(info["grid_frames"], window_start, rc.duration_frames(duration))
+        start, frames_n, _ = rc.fit_window(info["grid_frames"], window_start, rc.duration_frames(duration))
         geometry = rc.geometry(info["width"], info["height"], megapixels, crop, allow_upscale,
                                resize_method, output_width, output_height)
         width, height = geometry["width"], geometry["height"]
         loaded = st.load_window(path, info, start, frames_n, geometry)
         window, frames_n, audio = loaded["window"], loaded["length"], loaded["audio"]
-        notes += loaded["notes"]
-        marker_list, marker_notes = rc.parse_markers(markers, frames_n)
-        notes += marker_notes
-        edits = [marker["frame"] for marker in marker_list]
         ripple = {
-            "window": window, "markers": marker_list, "length": frames_n, "width": width,
-            "height": height, "fps": rc.FPS, "window_start": start, "window_time": loaded["window_time"],
-            "audio": audio, "source": video, "source_version": info["version"], "window_key": loaded["key"],
-            "binding": (video, path.stat().st_mtime_ns, start, frames_n, tuple(edits), width, height),
-            "geometry": geometry,
+            "window": window, "length": frames_n, "width": width, "height": height,
+            "fps": rc.FPS, "audio": audio, "window_key": loaded["key"], "geometry": geometry,
         }
-        cw, ch = geometry["content_rect"][2:]
-        text = [rc.describe(start, frames_n, edits) + f" · {cw}x{ch}", *notes]
-        ui = {"text": text, "binding": [start, frames_n, edits, video], "geometry": [geometry]}
-        frames, anchors = st.anchor_outputs(window, marker_list, geometry)
-        return {"ui": ui, "result": (frames, ripple, window, audio, *anchors)}
+        content = vd.trim_content(window, geometry)
+        clip_video = st.make_ripple_video(content, rc.FPS, audio, ripple)
+        return (clip_video, window, audio, content[0:1].clone(), content[-1:].clone())
 
 
 # 接口必须在模块导入时挂到 routes：ComfyUI 在加载完全部自定义节点之后才把
 # routes 装进 app，改成函数延后调用就赶不上这一步（项目里 csglide_adopt.py 同写法）。
+# 时间轴面板靠它读源片时长与尺寸，删了面板就只剩转圈。
 @PromptServer.instance.routes.get("/banzhang/ripple/info")
 async def ripple_info(request):
     try:
@@ -103,22 +95,6 @@ async def ripple_info(request):
     except (OSError, ValueError, av.error.FFmpegError) as error:
         return web.json_response({"error": str(error)}, status=404)
     return web.json_response(info)
-
-
-@PromptServer.instance.routes.get("/banzhang/ripple/frame")
-async def ripple_frame(request):
-    query = request.query
-    try:
-        data, name = vd.frame_png(query.get("video", ""), int(query.get("frame", "0")),
-                                  **vd.query_geometry(query))
-    except (OSError, ValueError, av.error.FFmpegError) as error:
-        return web.json_response({"error": str(error)}, status=404)
-    # 缩略图带版本令牌可以缓存，下载帧必须实时生成。
-    cacheable = query.get("v") and not query.get("download")
-    headers = {"Cache-Control": "private, max-age=86400" if cacheable else "no-store"}
-    if query.get("download"):
-        headers["Content-Disposition"] = f'attachment; filename="{name}"'
-    return web.Response(body=data, content_type="image/png", headers=headers)
 
 
 NODE_CLASS_MAPPINGS = {"BZ_RippleClip": BZ_RippleClip}

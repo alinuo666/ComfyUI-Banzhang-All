@@ -1466,16 +1466,19 @@ svg.topo { display:block; min-width:100%; }
 .topo g.tnode { cursor:pointer; }
 .topo g.tnode.sel .node-rect { stroke:var(--h3-accent); stroke-width:1.6; }
 .topo g.tnode.off { opacity:.4; }
-.topo .tname { font-size:12.5px; font-weight:600; fill:var(--h3-txt); }
-.topo .tkind { font-size:10px; fill:var(--h3-label); }
-.topo .tfrom { font-size:9.5px; fill:var(--h3-dim); }
+.topo .tname { font-size:12px; font-weight:600; fill:var(--h3-txt); }
+.topo .tkind { font-size:9.5px; fill:var(--h3-label); }
+.topo .tfrom { font-size:9px; fill:var(--h3-dim); }
 .topo .edge { fill:none; stroke:rgba(255,255,255,.28); stroke-width:1.4; }
 .topo .edge.video { stroke:var(--h3-accent); }
-.topo .elabel { font-size:9px; font-weight:600; fill:var(--h3-dim); }
+.topo .edge.inferred { stroke-dasharray:5 4; opacity:.75; }
+.topo .elabel { font-size:8px; font-weight:600; fill:var(--h3-dim); }
 .topo .elabel.video { fill:var(--h3-accent); }
-.topo .sw { fill:#54545b; }
-.topo .sw.on { fill:var(--gc-wave); }
-.topo .sw-knob { fill:#fff; }
+.topo .elabel.inferred { font-style:italic; }
+.topo .sw { fill:#26262b; stroke:var(--h3-line); stroke-width:1; }
+.topo .sw.on { fill:var(--h3-accent-dim); stroke:var(--h3-accent); }
+.topo .sw-knob { fill:var(--h3-dim); }
+.topo .sw-knob.on { fill:var(--h3-accent); }
 .topo .stat-dot { fill:var(--h3-label); }
 .topo .stat-dot.cached { fill:var(--gc-wave); }
 .topo .stat-dot.running { fill:var(--h3-accent); }
@@ -1489,18 +1492,7 @@ svg.topo { display:block; min-width:100%; }
 .bzf-run:active:not(:disabled) { filter:brightness(.95); }
 .bzf-run:disabled { background:var(--h3-raise); color:var(--h3-label); cursor:not-allowed; }
 
-/* 关闭阶段运行前确认：罩在拓扑区上，不全屏打断 */
-.bzf-mask { position:absolute; inset:0; z-index:30; display:none;
-  align-items:center; justify-content:center; background:rgba(0,0,0,.55);
-  border-radius:10px; }
-.bzf-mask.open { display:flex; }
-.bzf-dialog { background:var(--h3-raise); border:1px solid var(--h3-line);
-  border-radius:12px; max-width:340px; width:calc(100% - 32px); padding:18px; }
-.bzf-dialog h3 { font-size:14px; font-weight:600; margin:0 0 8px; }
-.bzf-dialog p { font-size:12px; color:var(--h3-dim); line-height:1.6; margin:0 0 14px; }
-.bzf-d-actions { display:flex; gap:10px; }
-.bzf-d-actions button { flex:1; padding:9px; border-radius:8px; font-size:12.5px;
-  border:none; cursor:pointer; font-family:inherit; }
-.bzf-d-cancel { background:var(--h3-line); color:var(--h3-txt); }
-.bzf-d-ok { background:var(--h3-accent); color:#08131a; font-weight:600; }
+/* B1 瘦身（2026-11-18）：管道口灰字说明（推送两钮按用户改口留在主行，caret/菜单样式已删） */
+.topo-auto-note { display:none; font-size:10px; color:var(--h3-dim); margin:4px 2px 0; line-height:1.5; }
+.bzf-stage-wrap[data-mode="group"] .topo-auto-note { display:block; }
 `;

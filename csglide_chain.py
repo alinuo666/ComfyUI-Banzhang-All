@@ -566,6 +566,59 @@ def set_stage(name, stage):
     return {"stage": s, "label": label, "canvas": canvas, "提示": tip}
 
 
+# ---------------- 分镜轨（20261119）：时间轴图片锚 ----------------
+# 锚存片级 meta "bzsa.board"（与音频轨 bzsa.tracks 同库），
+# entries = [{file: input 相对路径, at: 整片绝对帧号, mtime}]。
+# 前端分镜轨经 GET/POST /cglide/chain/board 读写；Cast 出条件时
+# _board_keyframes 把落在本段的锚挂进 minimax_keyframes（与续写锚同构）。
+
+def board_of(name):
+    """读本片分镜锚；无档案 / 无锚返回空表。"""
+    if not name:
+        return []
+    conn = store._connect(chain_dir(name), create=False)
+    if conn is None:
+        return []
+    # 连接按工程缓存共享（_SafeConn），全仓约定不 close，这里同样不 close。
+    entries = store._meta_get(conn, "bzsa.board", []) or []
+    return [e for e in entries if isinstance(e, dict) and e.get("file")]
+
+
+@chainlocked
+def board_set(name, entries):
+    """分镜锚唯一写入口：白名单校验＋补 mtime＋按时间排序。
+
+    file 只认 input 目录内相对路径（拒 .. 穿越），不存在的文件直接丢；
+    at 钳为非负整数。写后广播＋清片缓存，时间轴与 Cast 指纹跟着刷新。
+    """
+    if not name:
+        raise ValueError("缺少片名")
+    inp = folder_paths.get_input_directory() if folder_paths is not None else "input"
+    clean, seen = [], set()
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        rel = str(e.get("file") or "").replace("\\", "/").strip("/")
+        if not rel or ".." in rel.split("/"):
+            continue
+        p = os.path.join(inp, *rel.split("/"))
+        if not os.path.isfile(p):
+            continue
+        at = max(0, int(e.get("at") or 0))
+        key = (rel, at)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({"file": rel, "at": at, "mtime": int(os.path.getmtime(p))})
+    clean.sort(key=lambda x: x["at"])
+    conn = store._connect(chain_dir(name), create=True)
+    store._meta_set(conn, "bzsa.board", clean)
+    with _film_memo_lock:
+        _film_memo.pop(str(name), None)
+    ws_broadcast("board", name)
+    return clean
+
+
 def clip_cont(name, cid, take=1, stage=None):
     """这一段第 take 版、第 stage 阶段的 AV latent 唯一真值。
 
@@ -1213,12 +1266,14 @@ def snap_frames(n, hi=None):
     return max(MIN_CLIP_FRAMES, out)
 
 
-def snap_frames_floor(n, hi=None):
-    """**向下**吸附到 17k+5 —— 末段按剩余音频缩短专用，绝不向上加帧。
+def snap_frames_ceil(n, hi=None):
+    """**向上**吸附到 17k+5 —— 末段按剩余音频缩短专用，净长宁可多出几帧。
 
-    snap_frames() 用的是 round：50 帧会被吸到 56，凭空多出 6 帧没有声音的
-    画面，正是用户要去掉的那截「补静音凑满设定时长」。这里一律取 floor，
-    保证新段长 ≤ 剩余音频能铺满的长度。
+    20261119 用户拍板换向：旧版向下吸附（floor）保证画面绝不超出音频，
+    但末段净长会比剩余音频最多短一整格（16 帧 ≈ 0.7 秒）—— 音频尾巴
+    照样丢，58s 实测场景补段后仍欠这一截。向上吸附反过来：末段画面最多
+    比音频多 16 帧静帧，**音频一定铺得完**。对音乐驱动的场景，宁可片尾
+    定格零点几秒，不能丢歌词。
     """
     try:
         n = int(round(float(n)))
@@ -1227,8 +1282,9 @@ def snap_frames_floor(n, hi=None):
     top = int(hi or MAX_CLIP_FRAMES)
     n = max(MIN_CLIP_FRAMES, min(top, n))
     grid = max(1, int(FRAME_GRID))
-    k = max(0, int((n - FRAME_BASE) // grid))
+    k = max(0, -(-(n - FRAME_BASE) // grid))      # 向上取整除
     out = FRAME_BASE + grid * k
+    # 向上可能顶出上限（例如 718 → 726），退回不超过 top 的最大格点
     while out > top and k > 0:
         k -= 1
         out = FRAME_BASE + grid * k
@@ -1239,6 +1295,9 @@ def shrink_tail_to_audio(name, files=None):
     """导入音频后：末段音源不够时，**连画面段长一起**缩短到剩余音频实际时长。
 
     用户 20261111 选 B：末段不该补静音凑满 10 秒，画面也不该多出那截空帧。
+    用户 20261119 换向：按当时口径向下吸格，末段净长反而比音频短最多一格
+    （歌词尾部被丢）—— 改为画面迁就音频，宁可多出 ≤16 帧静帧不丢音频。
+    两头的取舍都是用户拍的板，以最新这条为准。
 
     本函数**只改档案 frames**（走唯一写入口 _resize_one），不碰音频。调用方
     /banzhang/audio/auto_slice 紧接着在同一事务里跑一次 reslice_drivers，
@@ -1295,9 +1354,9 @@ def shrink_tail_to_audio(name, files=None):
             # 不足 0.05 秒的段后端本来就不写驱动，缩它只会得到 5 帧空壳。
             if avail >= span or (avail / fps) < 0.05:
                 continue
-            # 反解目标总帧：new - overlap = avail
+            # 反解目标总帧：new - overlap >= avail（向上吸格保证音频铺得完）
             want_total = avail + overlap
-            new = snap_frames_floor(want_total)
+            new = snap_frames_ceil(want_total)
             if new >= old or new < MIN_CLIP_FRAMES:
                 continue
             res = _resize_one(name, cid, new)
@@ -1988,6 +2047,19 @@ def collect_run(name, cid, prompt_id):
 
     stage = current_stage(name)
 
+    # 组模式（提交图 h3_data.stage_flow 带阶段名单）：本次跑出来几采就收几采，
+    # 收完自动切到最后出片的那采；旧无组工作流保持单轨（只收当前选中阶段），零回归。
+    group_mode = False
+    for _spec in _history_graph(entry).values():
+        if isinstance(_spec, dict) and _spec.get("class_type") == "CSGlideCastCS":
+            try:
+                _hd = json.loads((_spec.get("inputs") or {}).get("h3_data") or "{}")
+                _sf = _hd.get("stage_flow") or {}
+                group_mode = bool(isinstance(_sf, dict) and _sf.get("stages"))
+            except Exception:
+                group_mode = False
+            break
+
     segs = [v for v in videos
             if str(_decl(v).get("bz_role") or "") == "segment"
             and str(_decl(v).get("bz_cid") or "") == str(cid)]
@@ -2001,33 +2073,54 @@ def collect_run(name, cid, prompt_id):
             "请确认视频合并节点的图像输入来自 VAE 解码链，且导演台 h3_data 里有片名和段 id。"
             % (cid, listed))
 
-    declared = [v for v in segs
-                if str(_decl(v).get("bz_stage") or "s1") == stage]
-    if not declared:
-        listed = "、".join(
-            "#%s %s（阶段 %s）" % (v.get("node"), v.get("filename"),
-                                _decl(v).get("bz_stage") or "未声明")
-            for v in segs)
-        raise ValueError(
-            "这次没有合并节点属于当前选中阶段「%s」（段 %s）。本次分段片：%s。"
-            "请确认一采/二采各接了一个「🎬 H3 VAE 快速解码」，"
-            "或到导演台把时间轴切到已出片的那个阶段。"
-            % (stage, cid, listed))
-    # 20261117 方案甲(X)：每个阶段恰好一份分段片（s1 一采 / s2 二采原片 /
-    # s3 三采成品）。declared 已按 bz_stage==当前阶段筛过，这里再出现两个就是
-    # 真接错线，照样拒收，不靠「取第一个」糊过去。退役 raw/final 变体分组。
-    if len(declared) > 1:
-        raise ValueError(
-            "有多个视频合并节点都声明为这一段「%s」阶段的分段片：#%s 与 #%s —— 只保留一个"
-            % (stage, declared[0].get("node"), declared[1].get("node")))
-    segment = declared[0]
+    # 按自报阶段分组：每个阶段恰好一份分段片，同阶段两个合并节点＝真接错线，拒收。
+    present = {}
+    for v in segs:
+        present.setdefault(str(_decl(v).get("bz_stage") or "s1"), []).append(v)
+    for st, lst in present.items():
+        if len(lst) > 1:
+            raise ValueError(
+                "有多个视频合并节点都声明为这一段「%s」阶段的分段片：#%s 与 #%s —— 只保留一个"
+                % (st, lst[0].get("node"), lst[1].get("node")))
+    if group_mode:
+        # 跑出来几采收几采（s1/s2/s3 互不覆盖），主片取最后出片的那采。
+        stage_order = [s for s in ("s1", "s2", "s3") if s in present]
+        if not stage_order:
+            raise ValueError("本次没有任何合并节点自报阶段（段 %s）。" % cid)
+        stage = stage_order[-1]
+    else:
+        if stage not in present:
+            listed = "、".join(
+                "#%s %s（阶段 %s）" % (v.get("node"), v.get("filename"),
+                                    _decl(v).get("bz_stage") or "未声明")
+                for v in segs)
+            raise ValueError(
+                "这次没有合并节点属于当前选中阶段「%s」（段 %s）。本次分段片：%s。"
+                "请确认一采/二采各接了一个「🎬 H3 VAE 快速解码」，"
+                "或到导演台把时间轴切到已出片的那个阶段。"
+                % (stage, cid, listed))
+        stage_order = [stage]
+    declared = [present[s][0] for s in stage_order]
+    segment = present[stage][0]
 
     take = max(1, int(meta.get("current_take") or 1))
-    # 20261111：按当前选中阶段校验对应的那份 cont（s1 仍是旧主档文件名）。
+    # 20261111：按选中阶段校验对应的那份 cont（s1 仍是旧主档文件名）。
     cont_path = clip_cont(name, cid, take, stage)
     if not os.path.isfile(cont_path):
-        raise ValueError("缺少本次 take 的续拍存档：%s"
-                         % os.path.basename(cont_path))
+        if group_mode and stage == "s3":
+            # 视频超分三采（RelayVSR）不产 latent 存档，永远没有 .s3.cont；
+            # 续拍真值在上游潜空间采，认最近一采已在盘的续拍档，语义不变。
+            for lower in ("s2", "s1"):
+                cp = clip_cont(name, cid, take, lower)
+                if os.path.isfile(cp):
+                    cont_path = cp
+                    break
+            else:
+                raise ValueError("缺少本次 take 的续拍存档：%s"
+                                 % os.path.basename(clip_cont(name, cid, take, stage)))
+        else:
+            raise ValueError("缺少本次 take 的续拍存档：%s"
+                             % os.path.basename(cont_path))
     # 回执/DB/前端一直有 latent_path 这个字段，删它会破坏契约。
     latent_path = cont_path
 
@@ -2036,18 +2129,26 @@ def collect_run(name, cid, prompt_id):
     # 整条覆写，否则收一次片就把别的阶段那份档的登记抹掉了（阶段档静默丢失）。
     rec = dict(take_params.get(str(take)) or {})
     films = dict(rec.get("films") or {})
-    src = _output_path_from_descriptor(segment)
-    if not os.path.isfile(src):
-        raise ValueError("找不到分段视频源文件：%s" % segment.get("filename"))
-    dest = clip_film(name, cid, take, stage)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    if os.path.abspath(src) != os.path.abspath(dest):
-        shutil.copy2(src, dest)
-    vinfo = probe_film_info(dest)
-    frames = int(vinfo.get("frames") or 0)
-    if frames <= 0:
-        raise ValueError("收片后无法确认视频帧数：%s" % os.path.basename(dest))
-    films[_film_key(stage)] = dest
+    # 组模式把本次出片的每个阶段各登记一份（互不覆盖）；旧单轨只登记主阶段。
+    dest = None
+    frames = 0
+    vinfo = {}
+    for st in stage_order:
+        v = present[st][0]
+        src = _output_path_from_descriptor(v)
+        if not os.path.isfile(src):
+            raise ValueError("找不到分段视频源文件：%s" % v.get("filename"))
+        d = clip_film(name, cid, take, st)
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        if os.path.abspath(src) != os.path.abspath(d):
+            shutil.copy2(src, d)
+        vi = probe_film_info(d)
+        fr = int(vi.get("frames") or 0)
+        if fr <= 0:
+            raise ValueError("收片后无法确认视频帧数：%s" % os.path.basename(d))
+        films[_film_key(st)] = d
+        if st == stage:
+            dest, frames, vinfo = d, fr, vi
     default_brief = _media_brief(segment)
     default_brief.update({
         "width": int(vinfo.get("width") or 0),
@@ -2073,6 +2174,14 @@ def collect_run(name, cid, prompt_id):
             rec[key] = meta[key]
     take_params[str(take)] = rec
     update_clip(name, cid, {"take_params": take_params})
+
+    # 组模式收完自动把选中阶段切到最后出片的那采：监视器/时间轴/整片口
+    # 都读 current_stage，切了立刻显示三采画面，不用手点。旧无组不自动切。
+    if group_mode and current_stage(name) != stage:
+        try:
+            set_stage(name, stage)
+        except Exception as exc:
+            print("[H3 档案] 收片后自动切阶段到 %s 失败：%s" % (stage, exc))
 
     segment_brief = default_brief
     whole_brief = {}
@@ -2100,7 +2209,7 @@ def collect_run(name, cid, prompt_id):
         # 这里原先写着 archive_on: list(arch_on)，定义删了、引用没删 —— 每次
         # 收片到这儿 NameError，成片已复制完却走不到 set_film，时间轴一直空白。
         "stage": stage,
-        "variants": {_film_key(stage): dest},
+        "variants": {_film_key(s): films[_film_key(s)] for s in stage_order},
     }
     clip_from, clip_to, head_trim = _span_of(name, cid)
     # clip["film"] 是时间轴 / 预览 / 拼片的唯一读口：这里直接指向当前
@@ -4807,6 +4916,30 @@ try:
         except ValueError as exc:
             return _json({"error": str(exc)}, 400)
         return _json(out)
+
+    @PromptServer.instance.routes.get("/cglide/chain/board")
+    async def _route_board_get(request):
+        """读分镜轨锚表（时间轴图片锚）。"""
+        name = str(request.query.get("name") or "").strip()
+        if not name:
+            return _json({"error": "缺少片名"}, 400)
+        return _json({"board": await _io(board_of, name)})
+
+    @PromptServer.instance.routes.post("/cglide/chain/board")
+    async def _route_board_post(request):
+        """整表覆写分镜锚：拖入 / 拖动 / 删除都走这里，后端补 mtime 并校验。"""
+        try:
+            body = await request.json()
+        except Exception:
+            return _json({"error": "请求体不是 JSON"}, 400)
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
+        try:
+            saved = await _io(board_set, name, body.get("entries") or [])
+        except ValueError as exc:
+            return _json({"error": str(exc)}, 400)
+        return _json({"board": saved})
 
     @PromptServer.instance.routes.post("/cglide/chain/lock")
     async def _route_lock(request):

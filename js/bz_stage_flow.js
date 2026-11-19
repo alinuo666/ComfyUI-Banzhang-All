@@ -1,9 +1,10 @@
 /* 拓扑镜像渲染：所有阶段单行排列，分叉/汇合用绕行弧线，画布组 DAG 的 SVG 投影。
    状态持久化在导演台 properties，无组时回退。 */
 import { detectStages } from "./bz_group_detect.js";
+import { nodeList } from "./bz_group_utils.js";
 
-const NW = 148, NH = 62, GAPX = 42, PADX = 20, TOP = 16;
-const LANE_DY = 30, BEND = 18;
+const NW = 140, NH = 58, GAPX = 38, PADX = 16, TOP = 10;
+const LANE_DY = 16, BEND = 12;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function el(tag, attrs = {}) {
@@ -17,6 +18,54 @@ function writeState(host, state) {
   host.properties.bzStageFlow = state;
 }
 function isEnabled(state, id) { return state.toggles[id] !== false; }
+
+/* B1：管道口自动标记。组模式下口 7–13 的显示 label 加「·自动」，
+   提示这些口提交期按拓扑开关自动接线、无需手接；回退模式恢复原名
+   （旧图的读档口本就靠手接，不能误标）。只改 .label 显示层，
+   .name 与端口序号一律不动，接线与逻辑零影响。 */
+const AUTO_PORT_NAMES = ["整片潜空间", "整片", "本段一采潜空间", "本段二采潜空间", "本段二采视频", "下游潜空间", "下游视频"];
+function paintAutoPorts(host, mode) {
+  const outs = host.outputs || [];
+  AUTO_PORT_NAMES.forEach((base, k) => {
+    const o = outs[7 + k];
+    /* 20261118 口 7–13 已前端隐藏（csglide_cast.js pinCastPortLabels），
+       隐藏的口不再钉「·自动」标签，避免把隐藏口重新显示出来。 */
+    if (o && !o.hidden) o.label = mode === "group" ? base + "·自动" : base;
+  });
+}
+
+/* mute 联动：off = 整组成员静音（ComfyUI 原生 mode=2，画布灰显且不进提交），
+   on = 恢复被我们静音前的原 mode。原 mode 双写进 properties.bzMuteOrig，
+   刷新后 render 再收敛一遍即状态同步。只动阶段组成员，导演台/组外节点不碰；
+   用户手动静音的节点（无 orig 记录）开组时不擅自解除。 */
+function syncMute(host, detected) {
+  const { graph } = host.bzStageIO;
+  const state = readState(host);
+  if (!host.properties) host.properties = {};
+  const orig = host.properties.bzMuteOrig || (host.properties.bzMuteOrig = {});
+  const byId = {};
+  nodeList(graph).forEach((n) => { byId[n.id] = n; });
+  let changed = false;
+  detected.stages.forEach((s) => {
+    const on = isEnabled(state, s.id);
+    s.members.forEach((id) => {
+      const n = byId[id];
+      if (!n) return;
+      if (!on) {
+        if (n.mode !== 2) {
+          if (orig[id] == null) orig[id] = n.mode || 0;
+          n.mode = 2;
+          changed = true;
+        }
+      } else if (orig[id] != null) {
+        n.mode = orig[id];
+        delete orig[id];
+        changed = true;
+      }
+    });
+  });
+  if (changed) graph.canvas?.setDirtyCanvas?.(true, true);
+}
 
 /* 阶段 → 档案档位：latent 按它是第几个 latent 阶段认 sN，档案只有三档，
    三采以上并入 s3；video 阶段的产物登记在 s3 成片。与后端读档口同一套 s1/s2/s3。 */
@@ -97,7 +146,7 @@ function layout(stages) {
     if (xIndex[f] == null) return;
     const fi = xIndex[f], ti = xIndex[s.id];
     const base = { from: f, to: s.id, type: s.edgeTypes?.[k] || "",
-      isVideo: s.kind === "video" };
+      isVideo: s.kind === "video", inferred: !!s.edgeInferred?.[k] };
     if (ti === fi + 1) { edges.push({ ...base, laneY: null }); return; }
     const span = [fi, ti];
     let dir = "down", laneNo = pickLane(lanes.down, span);
@@ -110,40 +159,51 @@ function layout(stages) {
     edges.push({ ...base, dir, lane: laneNo });
   }));
 
+  /* 绕行轨道必须避开节点卡行：上轨贴卡顶上方、下轨贴卡底下方，
+     否则水平段落在卡片矩形里被盖住（卡片后于边绘制） */
   const topPad = TOP + lanes.up.length * LANE_DY;
   const cy = topPad + NH / 2;
   edges.forEach((e) => {
     if (e.laneY === null) { e.laneY = cy; return; }
     e.laneY = e.dir === "up"
-      ? cy - LANE_DY * (e.lane + 1)
-      : cy + LANE_DY * (e.lane + 1);
+      ? topPad - 8 - LANE_DY * e.lane
+      : topPad + NH + 8 + LANE_DY * e.lane;
   });
   Object.keys(pos).forEach((id) => { pos[id].y = topPad; });
   const width = maxRight + PADX;
-  const height = topPad + NH + lanes.down.length * LANE_DY + TOP;
+  const height = topPad + NH + 6 + lanes.down.length * LANE_DY;
   return { pos, edges, width, height, cy };
 }
 
 function edgeD(e, pos, cy) {
   const a = pos[e.from], b = pos[e.to];
   const x1 = a.x + NW, x2 = b.x;
+  /* 两端各伸进卡片 1px：卡片后绘制会盖住伸入段，视觉上线贴着卡边，不留断口 */
   if (e.laneY === null || e.laneY === cy) {
-    return { d: `M${x1},${e.laneY} L${x2 - 4},${e.laneY}`, labelY: e.laneY - 5 };
+    /* 直线标签放线下方：分叉绕行只往上走，上方会压到上升曲线 */
+    return { d: `M${x1 - 1},${e.laneY} L${x2 + 1},${e.laneY}`, labelY: e.laneY + 11 };
   }
   const y = e.laneY;
-  return { d: `M${x1},${cy} C${x1 + BEND},${cy} ${x1 + BEND},${y} ${x1 + 2 * BEND},${y}
-    L${x2 - 2 * BEND},${y} C${x2 - BEND},${y} ${x2 - BEND},${cy} ${x2},${cy}`,
+  return { d: `M${x1 - 1},${cy} C${x1 + BEND},${cy} ${x1 + BEND},${y} ${x1 + 2 * BEND},${y}
+    L${x2 - 2 * BEND},${y} C${x2 - BEND},${y} ${x2 - BEND},${cy} ${x2 + 1},${cy}`,
     labelY: y - 5 };
 }
 
 function drawEdges(svg, stages, lay) {
   lay.edges.forEach((e) => {
     const info = edgeD(e, lay.pos, lay.cy);
-    svg.appendChild(el("path", { class: `edge ${e.isVideo ? "video" : ""}`, d: info.d }));
+    const path = el("path", { class: `edge ${e.isVideo ? "video" : ""}${e.inferred ? " inferred" : ""}`, d: info.d });
+    if (e.inferred) {
+      const tip = el("title");
+      tip.textContent = `${e.isVideo ? "VIDEO" : "LATENT"} · 无真实连线，按标题序号推断`;
+      path.appendChild(tip);
+    }
+    svg.appendChild(path);
     const mx = (lay.pos[e.from].x + NW + lay.pos[e.to].x) / 2;
-    const t = el("text", { class: `elabel ${e.isVideo ? "video" : ""}`, x: mx - 14, y: info.labelY });
-    t.textContent = e.isVideo ? "VIDEO" : "LATENT";
+    const t = el("text", { class: `elabel ${e.isVideo ? "video" : ""}${e.inferred ? " inferred" : ""}`, x: mx, y: info.labelY });
+    t.textContent = e.inferred ? "推断" : (e.isVideo ? "VIDEO" : "LATENT");
     svg.appendChild(t);
+    t.setAttribute("x", mx - t.getBBox().width / 2);
   });
 }
 
@@ -154,23 +214,23 @@ function drawNodes(svg, stages, pos, state, host, onChange) {
     const g = el("g", { class: `tnode${on ? "" : " off"}${state.sel === s.id ? " sel" : ""}` });
     const tip = el("title");
     tip.textContent = `${s.title} · ${STATUS_TEXT[status]}\n`
-      + "点节点＝时间轴切到对应档案；右上开关＝本次运行是否旁路该阶段";
+      + "点节点＝时间轴切到对应档案；右上开关＝阶段启停（关闭时整组节点在画布静音灰显、本次不跑）";
     g.appendChild(tip);
     g.appendChild(el("rect", { class: `node-rect ${s.kind}`, x: p.x, y: p.y, width: NW, height: NH, rx: 10 }));
-    g.appendChild(el("circle", { class: `stat-dot ${status}`, cx: p.x + 12, cy: p.y + 14, r: 4 }));
-    const name = el("text", { class: "tname", x: p.x + 22, y: p.y + 18 });
+    g.appendChild(el("circle", { class: `stat-dot ${status}`, cx: p.x + 12, cy: p.y + 13, r: 4 }));
+    const name = el("text", { class: "tname", x: p.x + 22, y: p.y + 17 });
     name.textContent = nameOf(s);
     g.appendChild(name);
-    const kind = el("text", { class: "tkind", x: p.x + 12, y: p.y + 34 });
+    const kind = el("text", { class: "tkind", x: p.x + 12, y: p.y + 32 });
     kind.textContent = s.kind === "video" ? "视频域超分" : "潜空间重采样";
     g.appendChild(kind);
-    const from = el("text", { class: "tfrom", x: p.x + 12, y: p.y + 49 });
+    const from = el("text", { class: "tfrom", x: p.x + 12, y: p.y + 46 });
     from.textContent = fromText(s, stages);
     g.appendChild(from);
     g.appendChild(el("rect", { class: `sw ${on ? "on" : ""}`, "data-sw": s.id,
-      x: p.x + NW - 34, y: p.y + 9, width: 24, height: 13, rx: 6.5 }));
-    g.appendChild(el("circle", { class: "sw-knob", "data-sw": s.id,
-      cx: p.x + NW - (on ? 12 : 28), cy: p.y + 15.5, r: 5 }));
+      x: p.x + NW - 36, y: p.y + 7, width: 28, height: 14, rx: 7 }));
+    g.appendChild(el("circle", { class: `sw-knob ${on ? "on" : ""}`, "data-sw": s.id,
+      cx: p.x + NW - (on ? 15 : 29), cy: p.y + 14, r: 5 }));
     g.onclick = (ev) => {
       if (ev.target.dataset.sw) {
         if (!s.from.length) { host.bzOnBlockedToggle?.(s); return; } /* 起点阶段不可关 */
@@ -191,6 +251,7 @@ function render(host, onChange) {
   const svgBox = container.querySelector(".topo");
   if (svgBox) svgBox.innerHTML = "";
   const detected = detectStages(graph);
+  paintAutoPorts(host, detected.mode);
   if (detected.mode === "fallback") {
     container.dataset.mode = "fallback";
     host.bzStageDetected = null;
@@ -211,6 +272,7 @@ function render(host, onChange) {
   drawEdges(svg, detected.stages, lay);
   drawNodes(svg, detected.stages, lay.pos, state, host, onChange);
   host.bzStageDetected = detected;
+  syncMute(host, detected);
   if (onChange) onChange(detected);
   return true;
 }

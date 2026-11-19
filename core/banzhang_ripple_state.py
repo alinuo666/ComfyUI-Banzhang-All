@@ -11,26 +11,34 @@ import torch
 from . import banzhang_ripple_core as rc
 from . import banzhang_ripple_video as vd
 
-# 自定义端口类型名必须全包唯一，避免与 ComfyUI 其他节点的类型撞名。
-RIPPLE_TYPE = "BZ_RIPPLE"
-MAX_ANCHORS = 16
-ANCHOR_NAMES = tuple(f"anchor_{i}" for i in range(1, MAX_ANCHORS + 1))
-EDITED_ANCHOR_NAMES = tuple(f"edited_{name}" for name in ANCHOR_NAMES)
+# 「涟漪数据」不再是独立输出口：整包挂进官方 VIDEO 的内部属性，随 🎬 窗口视频口传给
+# 应用编辑 / 输出成片。属性名全包唯一，避免与核心 VIDEO 自带字段撞名。
+RIPPLE_ATTR = "_banzhang_ripple"
 CATEGORY = "👨‍🏫班长/MiniMax H3"
 
 
-def anchor_tooltip(identity: int) -> str:
-    if identity == 1:
-        return "标记 1 对应的那一帧，与它在时间轴上的位置无关。"
-    return f"标记 {identity} 对应的那一帧；没有该标记时输出为空。"
+def make_ripple_video(content, fps, audio, ripple: dict):
+    """把内容区帧包成官方 VIDEO（与核心 CreateVideo 同构造），挂上涟漪数据后返回。"""
+    content = content.detach().cpu()
+    if not content.is_contiguous():   # 裁剪出来的窗口帧常是切片视图，编码链路要求连续内存
+        content = content.contiguous()
+    try:
+        from .banzhang_dlss5_fg_media import _video_from_components
+        video, _ = _video_from_components(content, fps, audio)
+    except Exception as error:
+        raise ValueError(f"构造官方 VIDEO 对象失败：{error}") from error
+    if video is None:
+        raise ValueError("当前 ComfyUI 版本没有 VIDEO 类型，请升级 ComfyUI 后再使用涟漪。")
+    setattr(video, RIPPLE_ATTR, ripple)
+    return video
 
 
-def anchor_outputs(window, markers, geometry):
-    """先给出按时间排序的编辑帧批次，再按标记 ID 逐个给出独立锚点帧。"""
-    frames = vd.trim_content(window[[m["frame"] for m in markers]], geometry)
-    by_id = {m["id"]: frames[i:i + 1] for i, m in enumerate(markers)}
-    empty = frames[:0].clone()
-    return frames, tuple(by_id.get(identity, empty) for identity in range(1, MAX_ANCHORS + 1))
+def unwrap_ripple(ripple):
+    """从 🎬 窗口视频口取回涟漪数据字典；误接普通 VIDEO 时给出中文提示。"""
+    data = getattr(ripple, RIPPLE_ATTR, None)
+    if not isinstance(data, dict) or "window" not in data or "geometry" not in data:
+        raise ValueError("「🎬 窗口视频」必须接「H3 涟漪 · 选片段」的视频输出口；普通 VIDEO 里没有涟漪数据。")
+    return data
 
 
 def framing_inputs() -> dict:

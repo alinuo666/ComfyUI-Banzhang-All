@@ -4043,6 +4043,15 @@ class CSGlideCast:
                         keyframes.append(guide)
                         cond = node_helpers.conditioning_set_values(
                             cond, {"minimax_keyframes": keyframes})
+            # 分镜轨（20261119）：时间轴图片锚追加进 keyframes 通道，与续写锚
+            # 同构，两模式两档位都生效。让位规则：落在续写头里的锚自动挪到
+            # 接缝处（头几帧被上一段续写占着，图锚不抢位）。
+            _bkf = self._board_keyframes(
+                cfg, vae, width, height, frame_count, overlap, clip_id, log)
+            if _bkf:
+                cond = _add_keyframes(cond, _bkf)
+                if hd_cond is not cond:
+                    hd_cond = _add_keyframes(hd_cond, _bkf)
             # 说明：原本这里有「源视频」端口——文件档 = 续写文件本身、潜空间档
             # 实时抓最新成片，供「Glide 续接合成」拼长片。现已随端口一并移除：
             # 续接合成（Join）前端早已改成「源视频不做端口、路径面板自填或自动
@@ -4318,6 +4327,57 @@ class CSGlideCast:
             hd_ok = True
         return finish(cond, hd_cond, hd_ok)
 
+    @staticmethod
+    def _board_keyframes(cfg, vae, width, height, frame_count, head, cid, log):
+        """分镜轨：把落在本段的图片锚编码成 keyframes（与续写锚同构）。
+
+        at 是整片绝对帧号，减本段 clip_from 得局部坐标。落在续写头
+        (0..head-1) 的挪到接缝 head；坐标撞车往后让一格；越界丢弃。
+        读不到档案 / 没锚返回空表，行为与没有分镜轨时完全一致。
+        """
+        name = str((cfg.get("chain") or {}).get("name") or "").strip()
+        if not name or not cid:
+            return []
+        try:
+            from .. import csglide_chain as _chain
+            entries = _chain.board_of(name)
+            if not entries:
+                return []
+            rows = (_chain.film_summary(name).get("clips") or [])
+            row = next((r for r in rows if str(r.get("id")) == str(cid)), None)
+            if row is None:
+                return []
+            cf = int(row.get("clip_from") or 0)
+            ct = int(row.get("clip_to") or cf)
+        except Exception as e:
+            log("【分镜轨】读段档案失败（%s）—— 本次不挂锚" % e)
+            return []
+        kfs, used = [], set()
+        for ent in entries:
+            at = int(ent.get("at") or 0)
+            if not (cf <= at < ct):
+                continue
+            local = at - cf
+            if local < head:
+                log("【分镜轨】%d 帧的锚落在续写头（0..%d）—— 自动挪到接缝 %d"
+                    % (local, max(0, head - 1), head))
+                local = head
+            while local in used and local < frame_count:
+                local += 1
+            if local >= frame_count:
+                continue
+            used.add(local)
+            try:
+                img = _resize(_load_image(ent["file"])[:1], width, height, "center")
+                kfs.append({"resolved_frame_index": local,
+                            "latent": vae.encode(img)})
+            except Exception as e:
+                log("【分镜轨】%s 编码失败（%s），跳过" % (ent.get("file"), e))
+        if kfs:
+            log("【分镜轨】本段挂 %d 个图片锚（keyframes 通道，与续写锚同构）"
+                % len(kfs))
+        return kfs
+
     @classmethod
     def IS_CHANGED(cls, h3_data, **kwargs):
         # 连线输入在 IS_CHANGED 调用时恒为 None（execution.py 的 mark_missing），
@@ -4331,10 +4391,19 @@ class CSGlideCast:
         return str(h3_data or "") + "|" + _audio_driver_stamp(h3_data)
 
 
+def _add_keyframes(cond, kfs):
+    """往条件的 minimax_keyframes 通道追加锚（续写锚 / 分镜锚共用）。"""
+    old = list(cond[0][1].get("minimax_keyframes", []))
+    old.extend(kfs)
+    return node_helpers.conditioning_set_values(cond, {"minimax_keyframes": old})
+
+
 def _audio_driver_stamp(raw):
     """本工程驱动音频的指纹：各段驱动 wav 的路径 + 修改时间。
 
     读不到就返回空串（老工程 / 没拖音频），行为与以前完全一致。
+    分镜轨锚（bzsa.board）同样不进 h3_data：拖图 / 挪锚 / 删锚后
+    必须强制失效，否则采样复用上次输出，时间轴改了画面不变。
     """
     try:
         data = json.loads(raw) if isinstance(raw, str) else (raw or {})
@@ -4357,6 +4426,13 @@ def _audio_driver_stamp(raw):
             p = os.path.join(inp, *f.split("/"))
             mt = int(os.path.getmtime(p)) if os.path.isfile(p) else 0
             out.append("%s:%d" % (f, mt))
+        for ent in (_st._meta_get(conn, "bzsa.board", []) or []):
+            f = str((ent or {}).get("file") or "")
+            if not f or ".." in f.split("/"):
+                continue
+            p = os.path.join(inp, *f.split("/"))
+            mt = int(os.path.getmtime(p)) if os.path.isfile(p) else 0
+            out.append("B%s:%d:%d" % (f, mt, int(ent.get("at") or 0)))
         return "|".join(out)
     except Exception:
         return ""

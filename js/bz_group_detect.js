@@ -1,5 +1,6 @@
 /* 阶段解析：把画布组与跨组连线解析成阶段 DAG。无组时回退，旧工作流零破坏。
-   只识别标题含「采/超分」的阶段组；latent 阶段按标题序号补全，video 组走真实边。 */
+   只识别标题含「采/超分」的阶段组；跨组边优先认真实连线（含穿过组外节点的透明中转），
+   完全没有真实边时才按标题序号推断并标 inferred（渲染虚线）。 */
 import { groupList, nodeList, inGroup, groupTitle } from "./bz_group_utils.js";
 
 const VIDEO_HINTS = ["超分", "RelayVSR"];
@@ -33,27 +34,86 @@ function resolveNodeGroups(graph, stageIds) {
   return { map, errors };
 }
 
-/* 阶段组之间的跨组连线即阶段边，按组对去重，连线类型决定 LATENT / VIDEO */
-function collectCrossEdges(graph, nodeGroup) {
-  const raw = Array.isArray(graph.links) ? graph.links : Object.values(graph.links || {});
-  const seen = new Set();
+function rawLinks(graph) {
+  return Array.isArray(graph.links) ? graph.links : Object.values(graph.links || {});
+}
+
+/* 直接跨组边：两端都落在阶段组，连线类型决定 LATENT / VIDEO。
+   不按组对去重——DAG 去重在主入口做；这里保留每条连线，供编排层补口定位目标端。 */
+function collectCrossEdges(links, nodeGroup) {
   const edges = [];
-  for (const link of raw) {
+  for (const link of links) {
     if (!link || link.origin_id == null) continue;
     const a = nodeGroup[link.origin_id], b = nodeGroup[link.target_id];
     if (!a || !b || a === b) continue;
-    const key = a + "->" + b;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    edges.push({ from: a, to: b, type: link.type || "" });
+    edges.push({
+      from: a, to: b, type: link.type || "", socket: [link.origin_id, link.origin_slot],
+      toNode: link.target_id, toSlot: link.target_slot,
+    });
   }
   return edges;
 }
 
+/* 导演台读档口语义：整片/本段一采 → 第 1 个 latent 阶段，本段二采 → 第 2 个。
+   总线口 12/13 由提交期按开关动态改接，不参与静态识别。 */
+function castPortStage(slot, latentIds) {
+  if (slot === 7 || slot === 9) return latentIds[0] || null;
+  if (slot === 10 || slot === 11) return latentIds[1] || null;
+  return null;
+}
+
+/* 透明中转：连线源端在阶段组外时，沿入线 backward 穿过组外节点（路由/解码/合并等），
+   到阶段组节点即记录并停（不穿透），到导演台按读档口语义换算。
+   收集全部可达源阶段——合并类节点可能同时依赖多个阶段。
+   返回 Map：阶段 id → 该阶段边界上的输出 socket [nodeId, slot]（导演台读档口为 null）。 */
+function traceSources(originId, originSlot, nodeGroup, byTarget, castId, latentIds) {
+  const found = new Map();
+  const seen = new Set();
+  const queue = [[originId, originSlot]];
+  while (queue.length) {
+    const [id, slot] = queue.shift();
+    if (id == null) continue;
+    const key = id + "|" + slot;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (nodeGroup[id]) {
+      if (!found.has(nodeGroup[id])) found.set(nodeGroup[id], [id, slot]);
+      continue;
+    }
+    if (castId != null && String(id) === String(castId)) {
+      const s = castPortStage(slot, latentIds);
+      if (s && !found.has(s)) found.set(s, null);
+      continue;
+    }
+    for (const l of byTarget[id] || []) queue.push([l.origin_id, l.origin_slot]);
+  }
+  return found;
+}
+
+/* 入端在阶段组、源端在组外的连线：追出真实源阶段补边 */
+function collectTracedEdges(links, nodeGroup, byTarget, castId, latentIds) {
+  const edges = [];
+  for (const link of links) {
+    if (!link || link.origin_id == null) continue;
+    const b = nodeGroup[link.target_id];
+    if (!b || nodeGroup[link.origin_id]) continue;
+    for (const [a, socket] of traceSources(link.origin_id, link.origin_slot, nodeGroup, byTarget, castId, latentIds)) {
+      if (a !== b) edges.push({
+        from: a, to: b, type: link.type || "", socket,
+        toNode: link.target_id, toSlot: link.target_slot,
+      });
+    }
+  }
+  return edges;
+}
+
+/* kind：标题「超分」与入边类型优先；有 LATENT 入边即 latent（接线说了算），
+   类名白名单只在没有任何入边类型信息时兜底 */
 function isVideoStage(group, members, inTypes) {
   const title = groupTitle(group);
   if (title.includes("超分")) return true;
   if (inTypes.some((t) => t === "VIDEO")) return true;
+  if (inTypes.some((t) => t === "LATENT")) return false;
   if (VIDEO_HINTS.some((k) => title.includes(k))) return true;
   return members.some((n) => VIDEO_CLASSES.includes(n.comfyClass));
 }
@@ -79,6 +139,23 @@ function topoSort(stages, edges) {
   return out.map((id) => stages.find((s) => s.id === id));
 }
 
+/* 阶段内的活视频输出口：优先有 VIDEO 出线的成员，其次任何带 VIDEO 输出端的成员
+   （输出口悬空也能被改接用上）。按 outputs 类型认，不依赖节点类名。 */
+function stageVideoOut(members, links) {
+  const withLink = new Set();
+  for (const l of links) {
+    if (l && l.type === "VIDEO" && members.some((n) => n.id === l.origin_id)) withLink.add(l.origin_id);
+  }
+  const ordered = [...members.filter((n) => withLink.has(n.id)), ...members.filter((n) => !withLink.has(n.id))];
+  for (const n of ordered) {
+    const outs = Array.isArray(n.outputs) ? n.outputs : [];
+    for (let i = 0; i < outs.length; i += 1) {
+      if (outs[i] && outs[i].type === "VIDEO") return [n.id, i];
+    }
+  }
+  return null;
+}
+
 /* 主入口：返回阶段 DAG 或回退标志，调用方据此渲染与改线 */
 export function detectStages(graph) {
   const allGroups = groupList(graph);
@@ -89,31 +166,77 @@ export function detectStages(graph) {
 
   const stageIds = new Set(stageGroups.map((g) => g.id));
   const { map: nodeGroup, errors } = resolveNodeGroups(graph, stageIds);
-  const edges = collectCrossEdges(graph, nodeGroup);
+  const links = rawLinks(graph);
+  const byTarget = {};
+  for (const l of links) {
+    if (l && l.target_id != null) (byTarget[l.target_id] = byTarget[l.target_id] || []).push(l);
+  }
+  const cast = nodeList(graph).find((n) => n.comfyClass === "CSGlideCastCS");
+  const castId = cast ? cast.id : null;
+  const membersOf = (g) => nodeList(graph).filter((n) => nodeGroup[n.id] === g.id);
+  const byIdNode = {};
+  nodeList(graph).forEach((n) => { byIdNode[n.id] = n; });
+  /* 目标端口名：编排层补口要按名字写进提交对象（提交对象 inputs 以名字为键）。
+     合成图/mock 节点可能没有 inputs，返回 null 时编排层跳过补口。 */
+  const nameOf = (id, slot) => {
+    const n = byIdNode[id];
+    const inp = n && Array.isArray(n.inputs) ? n.inputs[slot] : null;
+    return inp && inp.name ? inp.name : null;
+  };
   const warnings = [];
 
+  const direct = collectCrossEdges(links, nodeGroup);
+  /* 先用直接边定 kind，排出 latent 序号供读档口映射 */
+  const latentIds = stageGroups
+    .filter((g) => !isVideoStage(g, membersOf(g), direct.filter((e) => e.to === g.id).map((e) => e.type)))
+    .sort((a, b) => (titleOrder(groupTitle(a)) || 0) - (titleOrder(groupTitle(b)) || 0))
+    .map((g) => g.id);
+  const traced = collectTracedEdges(links, nodeGroup, byTarget, castId, latentIds);
+
+  const seenPair = new Set();
+  const allEdges = [];
+  const crossAll = [...direct, ...traced];
+  for (const e of crossAll) {
+    const key = e.from + "->" + e.to;
+    if (seenPair.has(key)) continue;
+    seenPair.add(key);
+    allEdges.push(e);
+  }
+
   const stages = stageGroups.map((g) => {
-    const members = nodeList(graph).filter((n) => nodeGroup[n.id] === g.id);
-    const inEdges = edges.filter((e) => e.to === g.id);
-    const kind = isVideoStage(g, members, inEdges.map((e) => e.type)) ? "video" : "latent";
+    const members = membersOf(g);
+    const inEdges = allEdges.filter((e) => e.to === g.id);
     return {
-      id: g.id, title: groupTitle(g), kind,
+      id: g.id, title: groupTitle(g),
+      kind: isVideoStage(g, members, inEdges.map((e) => e.type)) ? "video" : "latent",
       order: titleOrder(groupTitle(g)),
       members: members.map((n) => n.id),
+      videoOut: stageVideoOut(members, links),
       from: inEdges.map((e) => e.from),
+      fromSockets: inEdges.map((e) => e.socket || null),
       edgeTypes: inEdges.map((e) => e.type),
+      edgeInferred: inEdges.map(() => false),
+      /* 每条跨组入线的目标端（不去重）：静音上游会把出线带出提交对象，
+         编排层靠这份名单给启用阶段补回缺失的输入口（2026-11-18 二次事故根修） */
+      inEdges: crossAll.filter((e) => e.to === g.id).map((e) => ({
+        from: e.from, type: e.type, socket: e.socket || null,
+        toNode: e.toNode, toSlot: e.toSlot, toName: nameOf(e.toNode, e.toSlot),
+      })),
     };
   });
 
-  /* latent 阶段按标题序号补全：阶段间 latent 经导演台中转、画布上可能无直接连线 */
+  /* 序号补全只兜底「完全没有真实入边」的 latent，标推断；有真实边（哪怕接去别的阶段）绝不造边 */
   const latents = stages.filter((s) => s.kind === "latent")
     .sort((a, b) => (a.order || 0) - (b.order || 0));
   latents.forEach((s, i) => {
     if (i === 0) return;
     const prev = latents[i - 1];
-    if (!s.from.includes(prev.id)) {
+    if (!s.from.length) {
       s.from.push(prev.id);
+      s.fromSockets.push(null);
       s.edgeTypes.push("LATENT");
+      s.edgeInferred.push(true);
+      warnings.push(`「${prev.title}」→「${s.title}」无真实连线，按标题序号推断（虚线）`);
     }
   });
 

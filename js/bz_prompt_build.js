@@ -955,6 +955,14 @@ class PromptBuilder {
        跨工程安全由那一层保证），提交时再抹一次是多余且有害的。
        cid 为空 = 真正未登记的新段，后端仍按原逻辑自登记。 */
     h3Submit.chain = { ...(h3Submit.chain || {}), clip: String(cid || "") };
+    /* 组模式收片要靠 h3_data.stage_flow 判「本次启用/出片了哪几采」。
+       seg.state 克隆不一定带它，这里从拓扑区唯一真值 collectStageFlow 补写，
+       保证画布单跑与全部渲染两条路径交出去的 h3_data 都带阶段名单。 */
+    const _sfFn = castNode.h3ui && castNode.h3ui.collectStageFlow;
+    if (typeof _sfFn === "function") {
+      const _sf = _sfFn();
+      if (_sf) h3Submit.stage_flow = _sf;
+    }
     castEntry.inputs.h3_data = JSON.stringify(h3Submit);
     patched.push("h3");
 

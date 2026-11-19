@@ -7,6 +7,7 @@
 
 import os
 import time
+import weakref
 from pathlib import Path
 
 import comfy.model_management as mm
@@ -287,14 +288,22 @@ class _模型句柄:
             self.engine = None
 
 
+# 执行器输出缓存会私藏句柄：字典被净化清空后，下一轮加载器命中缓存不执行，
+# 交回的旧句柄已不在字典里，取引擎() 又把显存装回来 —— 净化只清字典就永远
+# 摸不到它（20261118 日志「出片后自动净化 释放 0.00 GB」的根因）。
+# 弱引用登记册跟踪所有活句柄：句柄被缓存藏在哪都能释放，被 GC 时自动除名。
+_活句柄 = weakref.WeakSet()
+
+
 class _可释放缓存(dict):
     """清空时先释放每个引擎的显存，再断引用。
 
     净化器按既有约定只对模块级字典调 clear()，所以释放职责放在容器里，不在净化器加分支。
+    释放范围是登记册里的全部活句柄，不只是字典内的 —— 字典外的泄漏句柄同样要收。
     """
 
     def clear(self):
-        for handle in self.values():
+        for handle in list(_活句柄):
             # 一个释放失败不能让其余的跟着泄漏，也不能让净化器整条链断在这里。
             try:
                 handle.释放()
@@ -361,7 +370,9 @@ class BanZhangRelayVSRLoader:
         if key not in cache:
             # 换权重（含原地覆盖文件）、精度或后端时先放掉旧模型，避免两套 10GB 权重同时占着显存。
             cache.clear()
-            cache[key] = _模型句柄(info, dtype, attn_fn, 加速)
+            handle = _模型句柄(info, dtype, attn_fn, 加速)
+            _活句柄.add(handle)
+            cache[key] = handle
         return (cache[key],)
 
 

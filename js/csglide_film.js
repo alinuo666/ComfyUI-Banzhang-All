@@ -28,6 +28,7 @@ import { api } from "../../scripts/api.js";
 
 import { bzStore } from "./bz_store.js";
 import { mountAudioLane } from "./csglide_audio_lane.js";
+import { mountBoardLane } from "./bz_board_track.js";
 import { createTimelineEngine } from "./csglide_timeline_engine.js";
 import { netOfTotal, totalOfNet, secsIntOfFrames } from "./csglide_length.js";
 
@@ -996,6 +997,21 @@ export function createFilmMonitor(opts = {}) {
     });
   } catch (e) {
     console.warn("[audio-lane] 挂载失败:", e);
+  }
+
+  /* 分镜轨（20261119）：音频轨下面一行图片锚，坐标同一把尺子。
+     挂载失败不许影响时间轴本身。 */
+  let boardLaneApi = null;
+  try {
+    boardLaneApi = mountBoardLane({
+      after: (audioLaneApi && audioLaneApi.box)
+        || (el.waveSegs && el.waveSegs.parentElement),
+      pxOf: xOfFrame,
+      wOf: wOfFrames,
+      getName: opts.getName,
+    });
+  } catch (e) {
+    console.warn("[board-lane] 挂载失败:", e);
   }
 
   /* ---- 双缓冲（方案B/M2）：取景框里常驻两条 video，A/B 乒乓。 ----
@@ -3649,6 +3665,7 @@ export function createFilmMonitor(opts = {}) {
     drawWave();
     /* 时间轴像素尺子刚重算过：音频块按新坐标重摆一次（不重切峰值）。 */
     if (audioLaneApi) audioLaneApi.sync();
+    if (boardLaneApi) boardLaneApi.sync();
     const _t4 = _now();
     /* 20261108 根修：这里原来每次 layout 都调 absorbTinyOverflow()，把尺子
        微缩 24px 去"吃掉"右缘徽标造成的几像素假溢出。但 .bzf-band 是

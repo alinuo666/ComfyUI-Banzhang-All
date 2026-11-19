@@ -1,6 +1,7 @@
 /* 阶段拓扑分区：拓扑镜像挂进导演台面板，提交时把阶段状态写进 h3_data。
    结构对齐原型：topo-head（标题+状态 pill）+ 提示行 + topo-wrap（SVG 滚动盒）
-   + 主运行按钮（文案随开关动态变化，关闭阶段先确认再提交）。
+   + 主运行按钮（文案随开关动态变化，关闭阶段直接旁路提交，无弹窗——
+   2026-11-18 用户拍板删除跳过确认）。
    graph 钩子全模块只链一套，实例注册/注销 —— 节点删除不再留死钩子。 */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -36,41 +37,16 @@ export function installStageFlowUI(ui) {
   const note = el("div", "topo-note");
   note.style.display = "none";
   const topoWrap = el("div", "topo-wrap");
+  /* B1：管道口灰字说明，仅组模式显示（回退模式读档口靠手接，不显示） */
+  const autoNote = el("div", "topo-auto-note",
+    "口 7–13（整片／读档／下游）为自动管道：提交时按拓扑开关自动决定接线，无需手接。");
 
   /* 主运行按钮：范围完全由拓扑开关表达，替代已注销的遥控节点 */
   const actions = el("div", "bzf-actions");
   const btnRun = el("button", "bzf-run", "▶ 全程运行");
   btnRun.type = "button";
   actions.append(btnRun);
-
-  /* 关闭阶段运行前确认（原型同款，罩在拓扑区上，不全屏打断） */
-  const mask = el("div", "bzf-mask");
-  const dlg = el("div", "bzf-dialog");
-  const dTitle = el("h3", "", "确认跳过关闭阶段");
-  const dText = el("p", "");
-  const dRow = el("div", "bzf-d-actions");
-  const dCancel = el("button", "bzf-d-cancel", "取消");
-  const dOk = el("button", "bzf-d-ok", "继续运行");
-  dCancel.type = dOk.type = "button";
-  dRow.append(dCancel, dOk);
-  dlg.append(dTitle, dText, dRow);
-  mask.append(dlg);
-  wrap.append(head, note, topoWrap, actions, mask);
-
-  function confirmSkip(offStages) {
-    return new Promise((resolve) => {
-      dText.textContent = "「" + offStages.map((s) => s.title).join("、")
-        + "」已关闭，本次运行将被旁路：下游直接读取最近上游的存档产物。确认继续？";
-      mask.classList.add("open");
-      const done = (v) => {
-        mask.classList.remove("open");
-        dCancel.onclick = dOk.onclick = null;
-        resolve(v);
-      };
-      dCancel.onclick = () => done(false);
-      dOk.onclick = () => done(true);
-    });
-  }
+  wrap.append(head, note, topoWrap, autoNote, actions);
 
   let running = false;
   function paintPill(detected) {
@@ -163,9 +139,6 @@ export function installStageFlowUI(ui) {
   btnRun.onclick = async (e) => {
     e.stopPropagation();
     if (running || !ui.node.bzStageDetected) return;
-    const onIds = new Set(enabledStages(ui.node).map((s) => s.id));
-    const off = ui.node.bzStageDetected.stages.filter((s) => !onIds.has(s.id));
-    if (off.length && !(await confirmSkip(off))) return;
     try {
       await app.queuePrompt(0);
     } catch (err) {

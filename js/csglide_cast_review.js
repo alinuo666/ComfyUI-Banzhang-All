@@ -372,10 +372,12 @@ export function installReview(ui) {
         targets.push(String(link.target_id));
       }
     }
-    if (!targets.length) {
-      ui.lanesFlash("整片口还没连出去 —— 把「🎬 整片」连到下游节点的视频口（视频合并 / 超分 等）");
-      return;
-    }
+    /* 20261118 自动推送：整片口没手接时不再报错要求手连 —— 注入一个**专用**
+       视频合并节点直接吃整片加载器（视频+音频），子图＝加载器+该合并，绝不复用
+       画布上的阶段合并节点（复用会把整片写进阶段出片、还把选路器/解码整条渲染链
+       拖进子图 → 类型不匹配 / 选路器空路报错，20261118 用户真机日志）。
+       画布接线不变，只动本次提交副本。 */
+    const autoVideo = targets.length === 0;
     const oldText = btn ? btn.textContent : "";
     if (btn) { btn.dataset.busy = "1"; btn.disabled = true; btn.textContent = "推送中…"; }
     /* 「整片」口平时是关的：跑图时不往外发内容，接在后面的超分 / 插帧安静
@@ -442,6 +444,31 @@ export function installReview(ui) {
       const gnodes = app.graph._nodes || [];
       const gbyid = {};
       for (const n of gnodes) gbyid[String(n.id)] = n;
+      /* 自动模式：注入专用合并节点吃整片加载器。required 控件优先抄画布上现有
+         合并节点的提交值（保证提示音等 combo 合法），没有就用安全默认；媒体口
+         按类型接加载器（视频3/音频4），不接图像口避免 IMAGE/VIDEO 混淆。 */
+      const PUSH_COMBINE_ID = "__bz_pushfilm_combine__";
+      if (autoVideo) {
+        let tpl = null;
+        for (const nid of Object.keys(out)) {
+          if ((out[nid] || {}).class_type === "banzhangVideoCombine") { tpl = out[nid].inputs; break; }
+        }
+        const base = Object.assign({}, tpl || {});
+        for (const k of Object.keys(base)) {
+          if (isRef(base[k], out)) delete base[k];   // 剥掉所有媒体/上游引用
+        }
+        base["⏱️ 帧率"] = base["⏱️ 帧率"] || 24;
+        base["📼 视频格式"] = base["📼 视频格式"] || "MP4 (H264/通用)";
+        base["🏷️ 文件前缀"] = "整片推送";
+        base["💾 保存元数据"] = true;
+        base["🔔 提示音文件"] = base["🔔 提示音文件"] || "🔇 不播放提示音";
+        base["🧹 出片后自动净化"] = false;
+        base["🎬 视频文件"] = [LOADER_ID, LOADER_VIDEO_SLOT];
+        base["🎵 音频"] = [LOADER_ID, 4];
+        out[PUSH_COMBINE_ID] = { class_type: "banzhangVideoCombine", inputs: base };
+        targets.push(PUSH_COMBINE_ID);
+        console.log("[推送整片] 整片口未手接，注入专用合并节点吃整片加载器（不复用阶段合并）");
+      }
       /* 整片链：只从整片口直接下游开始，**不包含导演台**（它由加载器顶替）。 */
       const forward = new Set();
       const fq = [...targets];
@@ -489,6 +516,26 @@ export function installReview(ui) {
           }
         }
       }
+      /* 20261118 选路器自动切路（用户提议「控制互斥选路器自动推送」的视频版）：
+         整片口接在选路器某一路时，本次提交把 selected 切到「加载器（整片）」那一路、
+         其余路剪掉。否则 selected 仍指旧路（如二采合并），而旧路上游被静音/剥除后
+         选路器空路 → 「第 1 路没有连线」（20261118 用户真机日志 wf28 #674/#675）。
+         只动提交副本，画布 selected 不变。 */
+      for (const nid of forward) {
+        const e = out[nid];
+        if (!e || e.class_type !== "BanZhang_RouteSwitch") continue;
+        const keys = Object.keys(e.inputs || {}).filter((k) => /^input_\d+$/.test(k));
+        const keepKey = keys.find((k) =>
+          isRef(e.inputs[k], out) && String(e.inputs[k][0]) === LOADER_ID);
+        if (!keepKey) continue;
+        for (const k of keys) {
+          if (k !== keepKey && isRef(e.inputs[k], out)) delete e.inputs[k];
+        }
+        const want = Math.max(1, Number(keepKey.slice(6)) || 1);
+        if ("selected" in e.inputs) e.inputs.selected = want;
+        if ("count" in e.inputs && !(Number(e.inputs.count) >= want)) e.inputs.count = want;
+        console.log("[推送整片] 选路器 #" + nid + " 本次切到第 " + want + " 路（整片加载器），其余路已剪");
+      }
       /* 反向收集上游闭包：加载器（无上游）+ 整片链保留的输入。 */
       const keep = new Set([LOADER_ID]);
       const queue = [...forward];
@@ -507,7 +554,8 @@ export function installReview(ui) {
          连到超分（非 OUTPUT_NODE）且超分输出悬空时，正是这个坑。加载器本身
          不是 OUTPUT_NODE，要排除它。 */
       const hasOutput = [...keep].some((nid) =>
-        nid !== LOADER_ID && gbyid[nid]?.constructor?.nodeData?.output_node === true);
+        nid === PUSH_COMBINE_ID ||
+        (nid !== LOADER_ID && gbyid[nid]?.constructor?.nodeData?.output_node === true));
       if (!hasOutput) {
         throw new Error("整片链路末端没有输出节点 —— 把超分的「视频」输出连到视频合并，"
           + "或直接把整片连到视频合并节点");
@@ -671,12 +719,35 @@ export function installReview(ui) {
         + " 画布连线→" + (graphDown.join("/") || "无")
         + " 提交图下游→" + (targets.join("/") || "无")
         + " 各口被吃=" + JSON.stringify(slotUse));
+      /* 20261118 自动推送：画布没把「整片潜空间」连出去时不再要求手接 ——
+         找提交图里的互斥选路器，把整片潜空间接进它空着的一路（只动本次提交
+         副本，画布接线不变）。后面既有的选路器剪枝会自动切到这一路并剪掉其余路。 */
+      if (!targets.length) {
+        const routerId = Object.keys(out).find((nid) =>
+          (out[nid] && out[nid].class_type) === "BanZhang_RouteSwitch");
+        if (routerId) {
+          const re = out[routerId];
+          re.inputs = re.inputs || {};
+          let freeKey = null;
+          for (let i = 1; i <= 8; i++) {
+            const k = "input_" + i;
+            if (!isRef(re.inputs[k], out)) { freeKey = k; break; }
+          }
+          if (freeKey) {
+            re.inputs[freeKey] = [castId, slotIdx];
+            targets.push(routerId);
+            console.log("[推送整片潜空间] 画布未连线，自动接入选路器 #" + routerId
+              + " 的 " + freeKey + "（仅本次提交，画布不变）");
+          }
+        }
+      }
       if (!targets.length) {
         const nm = graphDown.map((x) => (gbyid[x] ? (gbyid[x].type || x) : x)).join("、");
         ui.lanesFlash(graphDown.length
           ? `「整片潜空间」口接的是 ${nm}，但它这次没进提交图 —— 多半被旁路 / 静音了，`
             + "取消旁路（Ctrl+B）后再点一次"
-          : "「整片潜空间」口还没连出去 —— 把「🧬 整片潜空间」连到下游二采 / 放大节点的 latent 输入");
+          : "「整片潜空间」口还没连出去，且画布上没有互斥选路器可自动接入 —— "
+            + "放一个「🔀 互斥选路器」或把「🧬 整片潜空间」连到下游二采 / 放大节点");
         return;
       }
       /* ---- 先把「一采分支」整片标脏，后面所有闭包都不许碰它 ----
