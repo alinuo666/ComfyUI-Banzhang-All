@@ -2,7 +2,7 @@
 [project]
 name = "comfyui-banzhang-all"
 description = "班长全家桶 (Banzhang All-in-One) — 音频/视频/文本/显存管理等节点整合包"
-version = "2.1.2"
+version = "2.1.3"
 
 [tool.comfy]
 DisplayName = "班长全家桶 (Banzhang All-in-One)"

@@ -64,6 +64,14 @@ Note: model weights carry their own license — the MiniMax H3 Community License
 
 ## Changelog
 
+### 2026-11-23
+
+- New: **Depth Pro 2** all-in-one node — image/video to depth map, metric depth, colored preview and optional point cloud export.
+- New: **H3 reference-conditioning** toolset — AV pack, reference condition, replace-sample, load-video, prompt enhancer, mask blockify / overlay preview.
+- New: **subject redraw** crop / uncrop nodes and a shared redraw planner (SAM3-based face detection with static / constant-size / zoom-follow crop modes).
+- Reworked: face restoration pipeline split into detection, frames, render and preview modules.
+- Repo layout: README screenshots and QR codes moved into `assets/`; release root is now code and config only.
+
 ### 2026-11-17
 
 - New: **HD Reseed** — a five-in-one second-pass node: pixel upscale + video/audio VAE encode + AV concat + reference conditioning, with width/height/frames computed internally (no more hand-matching sizes between the condition side and the latent side).
@@ -178,6 +186,14 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 注意：模型权重有独立许可，MiniMax H3 Community License 含地域与营收门槛等限制，商用前请自行确认；`NOTICE.md` 所列第三方组件（尤其 `_h3mc/`，GPLv3）也不在可授权范围内，仍须遵守各自许可。
 
 ## 更新日志
+
+### 2026-11-23
+
+- 新增：**深度估计 Pro2** 一体化节点 —— 图片/视频 → 深度图、米制深度、着色预览与可选点云导出。
+- 新增：**H3 参考条件**工具组 —— AV 打包、参考条件、替换采样、加载视频、提示词增强、遮罩分块／叠加预览。
+- 新增：**主体重绘**裁剪／还原节点与共用重绘规划器（基于 SAM3 的人脸检测，支持静止大框／恒尺寸跟随／变焦跟随三种裁剪模式）。
+- 重构：人脸修复流程拆分为检测、逐帧、渲染、预览四个模块。
+- 仓库整理：README 截图与二维码归入 `assets/`，发布层根目录只留代码与配置。
 
 ### 2026-11-17
 
