@@ -15,7 +15,7 @@
  * ============================================================ */
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { castNodes, rackNodeOf, BZ_BAG_VERSION } from "./bz_rack.js";
+import { castNodes, rackNodeOf, deskNodeOf, BZ_BAG_VERSION } from "./bz_rack.js";
 import { rebuildMediaRackUI } from "./csglide_media_rack.js";
 import { rebuildCastUI } from "./csglide_cast.js";
 import { parseInitial } from "./csglide_cast_core.js";
@@ -202,10 +202,10 @@ const waitRack = (castNode, timeout = 15000) => waitFor(() => {
   if (n && (n.gmr || (n.widgets || []).some((w) => w && w.name === "rack_data"))) return n;
   return null;
 }, timeout);
-const waitDesk = (timeout = 15000) => waitFor(() => {
-  const list = deskNodes();
-  return list.length ? list[0] : null;
-}, timeout);
+const waitDesk = (castNode, timeout = 15000) => {
+  const input = (castNode?.inputs || []).find((s) => s?.name === "prompt_text");
+  return input?.link == null ? Promise.resolve(null) : waitFor(() => deskNodeOf(castNode), timeout);
+};
 
 /* ---------------- 灌库（hydrate） ---------------- */
 
@@ -252,7 +252,7 @@ function hydrateRackNode(rn, racks, curCid) {
   const normed = {};
   Object.keys(racks || {}).forEach((cid) => {
     const r = normRack(racks[cid]);
-    if (r && rackHasFile(r)) normed[String(cid)] = r;
+    if (r) normed[String(cid)] = r;
   });
   if (rn.gmr && rn.gmr.BAG_VERSION === BZ_BAG_VERSION && typeof rn.gmr.hydrateRacks === "function") {
     return rn.gmr.hydrateRacks(normed, curCid);
@@ -355,8 +355,20 @@ async function _hydrateFromStore(castNode, force) {
        rendering 态前端是权威，灌后端旧值会吃掉用户刚改的画布 / 素材（画布
        尺寸不生效根因）。热重建后、切工程等显式场景传 force=true 放行。 */
     if (!force && !projectStore.canPullFromBackend(castNode)) return false;
+    const initialProject = JSON.stringify(proj);
+    const initialRack = rackNodeOf(castNode);
+    const initialDesk = deskNodeOf(castNode);
+    const valueOf = (n, key) => n?.widgets?.find((w) => w.name === key)?.value;
+    const rackValue = valueOf(initialRack, "rack_data");
+    const deskValue = valueOf(initialDesk, "desk_data");
     const data = await fetchProjectCached(proj.name);
     if (!data || data.backend !== "db") return false;
+    const rn = await waitRack(castNode);
+    const dn = await waitDesk(castNode);
+    if (!force && (!projectStore.canPullFromBackend(castNode)
+      || castNode.properties.gcast_project !== proj || JSON.stringify(proj) !== initialProject
+      || (initialRack && valueOf(initialRack, "rack_data") !== rackValue)
+      || (initialDesk && valueOf(initialDesk, "desk_data") !== deskValue))) return false;
     const doneKey = proj.name + "|" + (proj.gen || 0) + "|" + proj.shots.length + "|" + (data.current || "");
     if (hydrateDone.get(castNode) === doneKey) return false;
 
@@ -374,7 +386,7 @@ async function _hydrateFromStore(castNode, force) {
          与身份判定无关。 */
       if (clip.state && typeof clip.state === "object") shot.state = clip.state;
       const rk = normRack(rackByCid[clip.id]);
-      if (rk && rackHasFile(rk)) shot.rack = rk;
+      if (rk) shot.rack = rk;
     });
 
     /* current 对齐到库里的当前段下标。 */
@@ -384,7 +396,6 @@ async function _hydrateFromStore(castNode, force) {
     }
 
     /* 2) 媒体架（等节点就绪）。 */
-    const rn = await waitRack(castNode);
     if (rn) {
       hydrateRackNode(rn, rackByCid, data.current || "");
       /* 回填静默失败检测：库里有素材、灌完媒体架却还是空的 —— 以前这里一声不
@@ -412,7 +423,6 @@ async function _hydrateFromStore(castNode, force) {
     }
 
     /* 3) 文案台。 */
-    const dn = await waitDesk();
     if (dn && data.desk) hydrateDeskNode(dn, data.desk);
 
     /* 4) 导演台面板回到当前段，广播让媒体架 / 文案台联动一次。 */
@@ -505,7 +515,7 @@ async function applyProjectBundle(castNode, name, data, opts) {
   if (rn) hydrateRackNode(rn, racks, data.current || "");
 
   /* 文案台：DB 工程灌回；老 JSON 工程没有档案，灌空包清掉旧工程的词。 */
-  const dn = await waitDesk(waitMs);
+  const dn = await waitDesk(castNode, waitMs);
   if (dn) {
     const emptyDesk = { chain: [], global: "", segs: {}, alias: {}, presets: [] };
     hydrateDeskNode(dn, data.desk || (data.backend === "json" ? emptyDesk : null));
@@ -691,7 +701,7 @@ async function healOldBags(castNode) {
       stale.push("媒体架");
     }
   }
-  const dn = deskNodes()[0];
+  const dn = deskNodeOf(castNode);
   if (dn && dn.deskUI && dn.deskUI.BAG_VERSION !== BZ_BAG_VERSION && !tags.desk) {
     tags.desk = true;
     try { if (data.desk) hydrateDeskNode(dn, data.desk); } catch (_) {}

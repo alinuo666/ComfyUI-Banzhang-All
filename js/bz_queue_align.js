@@ -31,11 +31,13 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { projectStore } from "./bz_project_store.js";
 import { promptBuild, lineOf } from "./bz_prompt_build.js";
+import { restoreVideoWorkflow } from "./bz_video_snapshot.js";
 import { noteCompile } from "./bz_audit.js";
 import { verifySingleSource } from "./bz_single_source.js";
 import { applyStageScope, DEFAULT_RUN_MODE, DEFAULT_S3_MODE } from "./bz_stage_orchestrator.js";
-import { applyGroupScope } from "./bz_group_orchestrator.js";
-import { enabledStages } from "./bz_stage_flow.js";
+import { applyGroupScope, applyPostGroupScope, captureExecutionGraph } from "./bz_group_orchestrator.js";
+import { enabledStages, disabledPostGroups } from "./bz_stage_flow.js";
+import { flushSegWrites } from "./bz_seg.js";
 
 const CAST = "CSGlideCastCS";
 let patched = false;
@@ -57,6 +59,28 @@ function hasCastIn(prompt) {
     if (out[k] && out[k].class_type === CAST) return true;
   }
   return false;
+}
+
+/* 交付提交的载荷级识别（B1，20261123）：放行不能只挂在提交对象身份上 ——
+   中间层克隆/重建提交对象时 WeakSet 凭据会丢，整片子图就被当普通分段提交，
+   预检会拦下交付补丁（cont.frames=0 / pin=0）、编排会改它的接线。
+   两条载荷通道，认出任一条即交付：
+   · 提交对象自带的 bz_delivery 标记（整片推送 / 整片潜空间推送各写各的）；
+   · 导演台 h3_data 里 push_film_latent=true —— 全仓只有潜空间推送补丁写它
+     （csglide_cast_review.js），普通分段提交不会出现。 */
+function deliveryKindOf(workflow) {
+  const tag = workflow && workflow.bz_delivery;
+  if (tag === "whole_film" || tag === "whole_film_latent") return tag;
+  const out = (workflow && workflow.output) || {};
+  for (const k of Object.keys(out)) {
+    const n = out[k];
+    if (!n || n.class_type !== CAST) continue;
+    const raw = (n.inputs || {}).h3_data;
+    if (typeof raw !== "string") continue;
+    try { if (JSON.parse(raw).push_film_latent === true) return "whole_film_latent"; }
+    catch (_) { /* h3_data 坏了交给预检报错，不在这里当交付放行 */ }
+  }
+  return "";
 }
 
 /* 提交前门禁（20261106 v2 阶段 ③）——与 csglide_preflight.py 同一套规则。
@@ -178,17 +202,75 @@ function snapshotsOf(workflow) {
 
 function install() {
   if (patched || !api || typeof api.queuePrompt !== "function") return false;
-  const orig = api.queuePrompt.bind(api);
+  const send = api.queuePrompt.bind(api);
+  const orig = (number, submission, ...rest) => {
+    if (submission?.workflow?.nodes && Object.values(submission.output || {}).some(
+      n => n?.class_type === "banzhangVideoCombine")) {
+      const workflow = JSON.parse(JSON.stringify(submission.workflow));
+      restoreVideoWorkflow(workflow, submission.output);
+      return send(number, { ...submission, workflow }, ...rest);
+    }
+    return send(number, submission, ...rest);
+  };
+  const tracked = async (number, submission, ...rest) => {
+    const ui = hasCastIn(submission) && castNodeOf()?.h3ui;
+    const name = ui?.castName?.();
+    const result = await orig(number, submission, ...rest);
+    const id = result?.prompt_id || result?.promptId;
+    try {
+      if (ui && id) {
+        // 批跑由整轮循环维护结果；画布单跑入队成功后，旧批跑错误就不再是当前结果。
+        if (!ui.run && !ui._bzRunPreparing && ui.castName?.() === name) ui.clearRunResult?.();
+        ui.stageFlowQueued?.(String(id));
+      }
+    }
+    catch (e) { console.warn("[H3 Studio] 任务状态显示更新失败：", e); }
+    return result;
+  };
 
   api.queuePrompt = async function (number, workflow, ...rest) {
+    if (projectStore.takeDeliveryPrompt?.(workflow) || deliveryKindOf(workflow)) {
+      if (projectStore.isGloballyRendering() || castNodeOf()?.h3ui?._bzRunPreparing) {
+        throw new Error("全部分段运行中，请结束后再推送整片");
+      }
+      return orig(number, workflow, ...rest);  // 只跳过这一份整片子图，其他提交仍正常编译。
+    }
+    if (hasCastIn(workflow) && castNodeOf()?.h3ui?._bzDeliveryPreparing) {
+      throw new Error("正在准备整片推送或导出，请稍后再提交当前段");
+    }
+    const batchPrompt = projectStore.takeBatchPrompt(workflow);
+    const preparing = hasCastIn(workflow) && !!castNodeOf()?.h3ui?._bzRunPreparing;
+    if ((preparing || projectStore.isGloballyRendering()) && !batchPrompt && hasCastIn(workflow)) {
+      throw new Error("导演台正在运行全部分段，请等本轮结束后再提交当前段");
+    }
+    const stageSwitch = hasCastIn(workflow) && castNodeOf()?.h3ui?.stageFlowStagePromise;
+    if (stageSwitch && !(await stageSwitch)) throw new Error("阶段切换未完成，请检查后重新运行");
     /* 「🧬 推送整片潜空间」自己把 h3_data 打好补丁（push_film_latent=true）才提交，
        这里再 apply 一次会把整块 h3_data 换成 seg.state（bz_prompt_build.js:899）
        —— 补丁就没了。实测两次后端都报"整片潜空间口：开关关着"都是这一步盖的。
-       那个按钮在提交期间挂这个标记，我们直接放行（它自己的提示词/条件都在
-       h3_data 里，不需要再按段编译一次）。 */
-    if (typeof window !== "undefined" && window.__bzSkipQueueAlign) {
-      console.log("[班长] 推送整片潜空间：跳过画布运行对齐（h3_data 由按钮自己打好）");
-      return orig(number, workflow, ...rest);
+       整片子图的单次放行已在入口按提交对象处理，不再使用全局跳过开关。 */
+    /* 用户手点的局部执行优先（20261121）——
+       右键「对所选输出节点进行排队」/节点上的 ▶ 走到这里时，rest[0] 已带显式目标
+       名单。下面的阶段/组编排是给「导演台按钮」用的**自动范围推断**，它无权覆盖
+       用户的**明确意图**：一旦覆盖，挂在出片口下游的支线（人脸修复台等）就永远
+       进不了提交名单，表现是「怎么点都不跑」，而且不报错、终端一行日志都没有。
+       判定只看一件事：调用方有没有给显式名单。给了就整段放行——既不裁剪也不
+       改接线（改接线同样是服务于自动阶段范围的，手动排队时画布上怎么接就怎么跑）。
+       这条规则对所有支线节点一视同仁，不是为某个节点开的特例，所以不会再犯。 */
+    const explicit = rest[0]
+      && (rest[0].partialExecutionTargets || rest[0].queueNodeIds) || null;
+    const isExplicit = !!(explicit && (!Array.isArray(explicit) || explicit.length));
+    if (isExplicit) {
+      console.log("[班长·局部执行] 目标="
+        + (Array.isArray(explicit) ? explicit.join(",") : "?")
+        + "：用户显式指定，跳过阶段裁剪与改接线");
+    }
+    const detection = !isExplicit && hasCastIn(workflow) && castNodeOf()?.bzStageDetected;
+    if (detection?.errors?.length) {
+      throw new Error("阶段拓扑有错误：" + detection.errors.join("；"));
+    }
+    if (detection?.mode === "group" && !enabledStages(castNodeOf()).length) {
+      throw new Error("请至少启用一个阶段后再运行");
     }
     /* 阶段编排（20261117 方案甲 P2c/P3）——
        刻意放在 isGloballyRendering 放行**之前**：单跑与「全部渲染」批跑的每一段
@@ -199,26 +281,34 @@ function install() {
        视频口超分 11=本段二采视频）。默认「全程」+ 单条三采子图返回 null = 不裁不改，
        与旧行为完全一致。编排失败绝不拦用户手点的运行，退回全程提交。 */
     try {
-      if (hasCastIn(workflow)) {
+      if (!isExplicit && hasCastIn(workflow)) {
         const cnode = castNodeOf();
         const cui = cnode && cnode.h3ui;
         /* 组模式：导演台已从画布组解析出阶段 DAG，走不依赖类名的新编排 */
         const groupDetected = cnode && cnode.bzStageDetected;
+        let unifiedPosts = false;
         if (groupDetected && groupDetected.mode === "group") {
           const enabled = enabledStages(cnode).map((s) => s.id);
-          const gscoped = applyGroupScope(workflow.output, groupDetected, enabled, cnode.id);
+          const disabledPosts = disabledPostGroups(cnode).map((g) => g.id);
+          /* 快照必须在提交这一刻抓：识别之后选路器档位/端口名还可能变。
+             画布图不被提交裁剪改动，静音节点仍在画布上，正好是静音前完整接线。 */
+          const snapshot = captureExecutionGraph(app.graph, groupDetected);
+          const gscoped = applyGroupScope(workflow.output, groupDetected, enabled, cnode.id,
+            { snapshot, disabledPostIds: disabledPosts });
+          unifiedPosts = true;
           workflow.output = gscoped.output;
           if (gscoped.partialExecutionTargets) {
             rest[0] = { ...(rest[0] || {}),
               partialExecutionTargets: gscoped.partialExecutionTargets };
           }
           console.log("[班长·组编排] 启用=" + enabled.join("/")
+            + (disabledPosts.length ? " 关后处理=" + disabledPosts.join("/") : "")
             + (gscoped.partialExecutionTargets
               ? " 出片口=" + gscoped.partialExecutionTargets.join(",") : " (整图)")
             + (gscoped.rewired.length
               ? " 改接线=" + gscoped.rewired.map((r) => r.live
                   ? "#" + r.node + "←#" + r.to[0] + "口" + r.to[1] + "(活源)"
-                  : "#" + r.node + "←总线口" + r.port).join(",")
+                  : "#" + r.node + "←读档口" + r.port).join(",")
               : ""));
         } else {
         /* 无组旧图走旧阶段编排：范围来自 ui.runMode / ui.stage / ui.s3Mode。
@@ -246,15 +336,29 @@ function install() {
               : ""));
         }
         }
+        /* 组模式已把后处理组并进同一份规划（disabledPostIds），不再跑第二遍；
+           无组回退仍走旧后处理旁路，旧工作流零破坏。 */
+        if (!unifiedPosts) {
+          const disabled = disabledPostGroups(cnode);
+          if (disabled.length) {
+            const scoped = applyPostGroupScope(workflow.output, cnode.bzPostGroups,
+              disabled.map((g) => g.id), rest[0]?.partialExecutionTargets || null);
+            workflow.output = scoped.output;
+            rest[0] = { ...(rest[0] || {}), partialExecutionTargets: scoped.partialExecutionTargets };
+          }
+        }
       }
     } catch (e) {
+      if (castNodeOf()?.bzStageDetected?.mode === "group" || disabledPostGroups(castNodeOf()).length) {
+        throw new Error("阶段编排失败，已停止提交：" + (e?.message || e));
+      }
       console.warn("[班长] 阶段编排失败，已按全程提交：", e);
     }
     try {
       /* 「全部渲染」的循环里已经 flush + applyToPrompt 过了，它提交的每一段
          都会经过这里 —— 再做一遍纯属重复劳动，直接放行。 */
-      if (projectStore.isGloballyRendering && projectStore.isGloballyRendering()) {
-        return orig(number, workflow, ...rest);
+      if (batchPrompt) {
+        return tracked(number, workflow, ...rest);
       }
       if (hasCastIn(workflow)) {
         const node = castNodeOf();
@@ -270,6 +374,7 @@ function install() {
           const clip = (curShot && curShot.clip) ? String(curShot.clip) : String(chain.clip || "");
           /* 等三节点在途落库，保证提交那一刻前端缓存 = 后端 */
           await projectStore.flushWrites(String(chain.name || ""));
+          await flushSegWrites(String(chain.name || ""), clip);
           /* 窗口 1 修复（20261111）：编译前把驱动音频重切收口。「取消接续」的重切
              是 600ms 防抖、不等它 —— 紧接着点运行会拿旧切片出片（声画错位）。flush
              立即触发待发防抖、等在途完成，循环到空闲；它还会把末段缩短后的真实帧数
@@ -310,7 +415,7 @@ function install() {
     }
     /* 提交前门禁：编译之后再查（此时三个 *_data 已是本段数据）。
        刻意放在对齐 catch 之外 —— 否则会被「对齐失败不拦用户」的兜底吞掉。 */
-    const problems = preflightOf(workflow);
+    const problems = isExplicit ? [] : preflightOf(workflow);
     if (problems.length && !(typeof window !== "undefined" && window.__bzSkipPreflight)) {
       console.error("[班长] 提交前校验未通过：", problems);
       throw new Error("提交前校验未通过：\n· " + problems.join("\n· ")
@@ -318,7 +423,7 @@ function install() {
     }
     /* 三节点单一真源守卫（开关 window.__bzSingleSource，默认关）。 */
     const snap = snapshotsOf(workflow);
-    const single = await verifySingleSource(
+    const single = isExplicit ? null : await verifySingleSource(
       String((snap.h3.chain || {}).name || ""), snap.clip, snap);
     if (single && single.ok === false && single.errors && single.errors.length) {
       console.error("[班长] 三节点状态漂移：", single.errors);
@@ -331,7 +436,7 @@ function install() {
        原始错误冒出去时会被算在本文件头上（因为 queuePrompt 是本文件包装的），
        所以这里换成一句能照着查的话再抛。 */
     try {
-      return await orig(number, workflow, ...rest);
+      return await tracked(number, workflow, ...rest);
     } catch (e) {
       if (e instanceof TypeError && /failed to fetch/i.test(String(e.message || ""))) {
         console.error("[班长] 提交失败：连不上 ComfyUI 后端（进程可能已崩溃/OOM 退出或正在重启）。"

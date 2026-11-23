@@ -17,7 +17,7 @@ class BZ_RippleApply:
         "与窗口等长的空白 H3 音视频潜空间。",
     )
     DESCRIPTION = (
-        "把「选片段」窗口首帧编码成引导，与提示词一起组成 H3 条件，另给等长空白潜空间。"
+        "把「时间轴选段」窗口首帧编码成引导，与提示词一起组成 H3 条件，另给等长空白潜空间。"
         "接好 FL2VA 模型后，输出接到 BasicGuider（CFG 1）和采样器。"
         "重跑时，已编码的提示词和引导会自动复用。"
     )
@@ -28,7 +28,7 @@ class BZ_RippleApply:
             "required": {
                 "clip": ("CLIP", {"tooltip": "H3 的文本编码器（CLIP 类型选 minimax）。"}),
                 "vae": ("VAE", {"tooltip": "H3 的视频 VAE。"}),
-                "ripple": ("VIDEO", {"tooltip": "接「选片段」的 🎬 窗口视频输出口（涟漪数据在里面）。"}),
+                "ripple": ("VIDEO", {"tooltip": "接「时间轴选段」的 🎬 视频输出口（涟漪数据在里面）。"}),
                 "prompt": ("STRING", {"multiline": True, "default": rc.DEFAULT_PROMPT,
                            "tooltip": "给 H3 模型的生成指令。"}),
             },

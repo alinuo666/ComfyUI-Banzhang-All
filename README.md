@@ -14,8 +14,8 @@ The codes below are **donation QR codes**; the WeChat QR code in "Contact & Upda
 
 <table>
   <tr>
-    <td align="center">WeChat Pay<br><a href="wechat-reward.png"><img src="wechat-reward.png" width="200" alt="WeChat Pay"></a></td>
-    <td align="center">Alipay<br><a href="alipay-reward.jpg"><img src="alipay-reward.jpg" width="200" alt="Alipay"></a></td>
+    <td align="center">WeChat Pay<br><a href="assets/wechat-reward.png"><img src="assets/wechat-reward.png" width="200" alt="WeChat Pay"></a></td>
+    <td align="center">Alipay<br><a href="assets/alipay-reward.jpg"><img src="assets/alipay-reward.jpg" width="200" alt="Alipay"></a></td>
   </tr>
 </table>
 
@@ -29,15 +29,15 @@ The codes below are **donation QR codes**; the WeChat QR code in "Contact & Upda
 
 **H3 Director Studio**: multi-segment continuation, final-film monitor, timeline and parameters in one place.
 
-<a href="director-studio.jpg"><img src="director-studio.jpg" width="560" alt="H3 Director Studio"></a>
+<a href="assets/director-studio.jpg"><img src="assets/director-studio.jpg" width="560" alt="H3 Director Studio"></a>
 
 **H3 Desk + Media Rack**: segmented script editing and reference asset management.
 
-<a href="desk-media-rack.png"><img src="desk-media-rack.png" width="560" alt="H3 Desk & Media Rack"></a>
+<a href="assets/desk-media-rack.png"><img src="assets/desk-media-rack.png" width="560" alt="H3 Desk & Media Rack"></a>
 
 **Music-video production**: 4-segment continuation with audio waveform alignment, beat-based shot planning and per-segment preview.
 
-<a href="mv-studio.png"><img src="mv-studio.png" width="560" alt="MV production"></a>
+<a href="assets/mv-studio.png"><img src="assets/mv-studio.png" width="560" alt="MV production"></a>
 
 ## External Components & Licenses
 
@@ -107,7 +107,7 @@ Note: model weights carry their own license — the MiniMax H3 Community License
 - Bilibili: [Banzhang captain](https://space.bilibili.com/15838129?spm_id_from=333.788.0.0)
 - WeChat: scan the QR code below to add the author as a friend.
 
-<a href="wechat-qr.png"><img src="wechat-qr.png" width="285" alt="WeChat QR"></a>
+<a href="assets/wechat-qr.png"><img src="assets/wechat-qr.png" width="285" alt="WeChat QR"></a>
 
 ## Feedback
 
@@ -129,8 +129,8 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 
 <table>
   <tr>
-    <td align="center">微信支付<br><a href="wechat-reward.png"><img src="wechat-reward.png" width="200" alt="微信支付"></a></td>
-    <td align="center">支付宝<br><a href="alipay-reward.jpg"><img src="alipay-reward.jpg" width="200" alt="支付宝"></a></td>
+    <td align="center">微信支付<br><a href="assets/wechat-reward.png"><img src="assets/wechat-reward.png" width="200" alt="微信支付"></a></td>
+    <td align="center">支付宝<br><a href="assets/alipay-reward.jpg"><img src="assets/alipay-reward.jpg" width="200" alt="支付宝"></a></td>
   </tr>
 </table>
 
@@ -144,15 +144,15 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 
 **H3 导演台**：多段续写、成片监视、时间轴与参数集中在一处。
 
-<a href="director-studio.jpg"><img src="director-studio.jpg" width="560" alt="H3 导演台"></a>
+<a href="assets/director-studio.jpg"><img src="assets/director-studio.jpg" width="560" alt="H3 导演台"></a>
 
 **H3 文案台 ＋ H3 媒体架**：分段文案编辑与参考素材管理。
 
-<a href="desk-media-rack.png"><img src="desk-media-rack.png" width="560" alt="H3 文案台与媒体架"></a>
+<a href="assets/desk-media-rack.png"><img src="assets/desk-media-rack.png" width="560" alt="H3 文案台与媒体架"></a>
 
 **MV 视频制作**：4 段续写配合音频波形，按节拍排片与逐段预览。
 
-<a href="mv-studio.png"><img src="mv-studio.png" width="560" alt="MV 视频制作"></a>
+<a href="assets/mv-studio.png"><img src="assets/mv-studio.png" width="560" alt="MV 视频制作"></a>
 
 ## 外部组件与许可说明
 
@@ -222,7 +222,7 @@ Please open a GitHub Issue and include your ComfyUI version plus the last lines 
 - B 站主页：[班长captain](https://space.bilibili.com/15838129?spm_id_from=333.788.0.0)
 - 微信：点开下方二维码放大后扫码
 
-<a href="wechat-qr.png"><img src="wechat-qr.png" width="285" alt="微信二维码"></a>
+<a href="assets/wechat-qr.png"><img src="assets/wechat-qr.png" width="285" alt="微信二维码"></a>
 
 ## 问题反馈
 

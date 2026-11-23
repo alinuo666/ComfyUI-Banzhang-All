@@ -5,6 +5,7 @@ import { createFilmMonitor } from "./csglide_film.js";
 import { el } from "./csglide_ui_kit.js";
 import { projectShots } from "./csglide_seg_projection.js";
 import { RUN_MODES, DEFAULT_RUN_MODE, S3_MODES, DEFAULT_S3_MODE } from "./bz_stage_orchestrator.js";
+import { bzStore, STORE_FILM_EVENT } from "./bz_store.js";
 
 /* ============================================================
  * 成片监视器 / 时间轴 / 渲染控制 / 渲染范围
@@ -671,6 +672,11 @@ export function installMonitor(ui) {
   const onH3Preview = (e) => {
     const d = e && e.detail;
     if (!d || !d.image) return;
+    /* 逐步动画事件名是共用的（人脸修复台也装同一个 wrapper）：不按 node_id
+       过滤，修脸时每一步都会盖到导演台取景器上。"cast" 是导演台后端拿不到
+       unique_id 时的兜底值，一并放行。 */
+    const nid = d.node_id == null ? null : String(d.node_id);
+    if (nid !== null && nid !== String(ui.node && ui.node.id) && nid !== "cast") return;
     /* 三条产物都接：MP4（NVENC 动画，走 <video> + playbackRate）、
        animated WebP（NVENC 不可用时的兜底动画，走 <img>）、JPEG（初始噪声帧）。 */
     const mime = d.mime || "image/jpeg";
@@ -815,8 +821,15 @@ export function installMonitor(ui) {
      Q8=A：只切档案阶段 + 中文提示，绝不自动改 Cast 面板宽高。
      退役「用三采成品」变体钮：三采已独立成 s3 阶段，切三采按钮即取三采成品。 */
   const stageBtns = {};
+  /* 阶段是后端 chain.stage 的**只读投影**，不是前端自己记的第二份真值。
+     未知（还没读到档案 / 读失败 / 没有片名）就写 null —— 三颗钮都不亮。
+     上一版把任何非 s2/s3 的值一律折成 "s1"，于是「还没读到」和「后端确实是
+     一采」共用同一个显示：F5 之后按钮先亮一采、后端却按二采取档，正是本文件
+     :833 那句注释骂过的「看着对、其实错」。ui.stage 的两个读者都已兜住 null：
+     bz_queue_align.js:318 `|| "s1"`、csglide_cast_review.js:210 `ui.stage &&`
+     （未知就不比较 —— 拿一个假值去比并发保护，比出来的是假故障）。 */
   const paintStage = (s) => {
-    const cur = (s === "s2" || s === "s3") ? s : "s1";
+    const cur = (s === "s2" || s === "s3" || s === "s1") ? s : null;
     Object.keys(stageBtns).forEach((k) => {
       stageBtns[k].classList.toggle("active", k === cur);
       stageBtns[k].setAttribute("aria-pressed", k === cur ? "true" : "false");
@@ -824,26 +837,39 @@ export function installMonitor(ui) {
     ui.stage = cur;
   };
   ui.paintStage = paintStage;
-  /* 初始化从档案读真实阶段，不能默认写死 s1 —— 否则 F5 之后按钮亮「一采」、
-     后端却在按「二采」取档，属于「看着对、其实错」最难查的一类。 */
-  async function syncStage() {
+  /* 阶段的唯一数据来源 = bz_store 拉的 film_summary —— 后端在那个返回里就带了
+     stage，注释原话「时间轴直接吃 film_summary，阶段跟着一起给，面板不用再单查
+     一次」（csglide_chain.py:2644）。上一版这里自己 fetch /chain/summary，等于
+     给阶段开了**第二条通路**：通路两条、同步时机靠手工挑，漏一个就分叉，而漏的
+     那个恰好是收档推进 s2。
+     现在只留一条通路：后端任何片级落盘都会广播（save_chain），广播进 bz_store →
+     合帧拉一次 film_summary → 这里跟着 paintStage，不需要再找时机补同步。 */
+  /* 不订阅某个固定片名，而是收全局 film 事件 + 判「是不是当前在看的那部」：
+     切工程时不需要任何地方记得来重建订阅 —— 靠手工时机重挂，正是漏更新的来源。
+     时间轴自己已在订本片名（csglide_film.js:1465），所以这份投影不会是空的。 */
+  const onStageFilm = (ev) => {
     const name = castName();
-    if (!name) { paintStage("s1"); return; }
-    try {
-      const res = await api.fetchApi(
-        "/cglide/chain/summary?name=" + encodeURIComponent(name));
-      const d = await res.json().catch(() => ({}));
-      const okState = res.ok && !d.error;
-      paintStage(okState ? d.stage : "s1");
-    } catch (e) { paintStage("s1"); }
+    if (!name || !ev || !ev.detail || ev.detail.name !== name) return;
+    paintStage((ev.detail.film || {}).stage || null);
+  };
+  bzStore.addEventListener(STORE_FILM_EVENT, onStageFilm);
+  /* 热重建（rebuildCastUI）先 destroy 再 buildUI：不摘监听会一份画布叠多个
+     handler，还会把已删节点的闭包（连着整块面板 DOM）留在 bz_store 里。 */
+  ui.stageSyncDestroy = () => bzStore.removeEventListener(STORE_FILM_EVENT, onStageFilm);
+
+  function syncStage() {
+    const name = castName();
+    if (!name) { paintStage(null); return; }               // 没有片名 = 未知
+    paintStage((bzStore.film(name) || {}).stage || null);  // 先用现成投影，别干等
+    bzStore.touch(name, "stage");                          // 再要一次最新（120ms 合帧）
     /* 切工程后拓扑状态灯跟着换档案（stageflow 自己拉 summary.stage_files） */
     ui.stageFlowRefresh?.();
   }
   ui.syncStage = syncStage;   /* 切换工程后由工程同步块调用，保持按钮与档案一致 */
   async function setStage(s, btn) {
-    if (ui.run) { ui.lanesFlash("正在渲染 —— 跑完这一轮再切阶段"); return; }
+    if (ui.run) { ui.lanesFlash("正在渲染 —— 跑完这一轮再切阶段"); return false; }
     const name = castName();
-    if (!name) { ui.lanesFlash("还没有片名 —— 先在指挥条的工程名上填一个"); return; }
+    if (!name) { ui.lanesFlash("还没有片名 —— 先在指挥条的工程名上填一个"); return false; }
     if (btn) btn.disabled = true;
     try {
       const res = await api.fetchApi("/cglide/chain/stage", {
@@ -855,9 +881,11 @@ export function installMonitor(ui) {
       if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
       paintStage(d.stage || s);
       ui.lanesFlash(d.提示 || ("已切到「" + ({ s1: "一采", s2: "二采", s3: "三采" }[s] || "一采") + "」"));
+      return true;
     } catch (err) {
       ui.lanesFlash("切阶段没成：" + (err.message || err)
         + " —— 时间轴阶段保持原样");
+      return false;
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -947,12 +975,12 @@ export function installMonitor(ui) {
      阶段 3 的联动按钮、localStorage 状态、前端联动标志整套删除。
      轴头阶段组只留一采/二采/三采三颗真数据（20261117 方案甲 X）。 */
 
-  paintStage("s1");
-  void syncStage();
+  paintStage(null);      // 真值没到之前不亮任何一颗，理由见 paintStage 上方
+  syncStage();
 
   /* —— 生成 / 交付组 ——
      渲染（重新生成画面）与导出（只拼接、不生成）是一前一后两步，挨在一起。 */
-  const btnRunAll = el("button", "gcast-btn run", "▶ 全部渲染");
+  const btnRunAll = el("button", "gcast-btn run", "▶ 运行全部分段");
   btnRunAll.type = "button";
   btnRunAll.title = "依次渲染工程里的每一段（续写模式，渲染整个工程）";
   btnRunAll.onclick = (e) => {
@@ -989,7 +1017,7 @@ export function installMonitor(ui) {
   const btnPushFilmLatent = el("button", "gcast-btn gcast-export-btn", "🧬 推送整片潜空间");
   btnPushFilmLatent.type = "button";
   btnPushFilmLatent.title = "把所有段拼成一条完整潜空间，从「整片潜空间」口送给下游"
-    + "（二采 / 时间分块重绘；会跑一次导演台读档案、但**不采样**）";
+    + "（不重跑一采；下游二采或时间分块重绘仍会采样）";
   btnPushFilmLatent.onclick = (e) => {
     e.stopPropagation();
     void ui.pushFilmLatent(btnPushFilmLatent);
@@ -1032,14 +1060,16 @@ export function installMonitor(ui) {
   /* 可用状态：工程里没分段、或正在渲染时禁用。跟随段操作按钮一起刷新，
      所以挂在 paintSegTools() 里 —— 任何一次时间轴重绘都会带上它。 */
   function paintRenderRow() {
-    const n = ui.proj().shots.length;
-    const busy = isReallyRendering();
+    const shots = ui.proj().shots;
+    const n = shots.length;
+    const active = shots.filter((s) => s && !s.off).length;
+    const busy = !!ui._bzRunPreparing || !!ui._bzDeliveryPreparing || isReallyRendering() || !!ui.node.bzStageBusy?.();
     /* 渲染一开就把裁切剃刀收起来 —— 段块在跑，不能再切。 */
     if (busy && ui.cutMode) { try { setCutMode(false); } catch (e) { /* 尚未就绪 */ } }
     btnRunAll.disabled = !n || busy;
+    btnRunAll.textContent = n ? `▶ 运行全部分段（${active}/${n}）` : "▶ 运行全部分段";
     btnRunAll.title = !n ? "请先添加一些分段"
-      : `按顺序排队渲染全部 ${n} 个分段（续写模式：每段喂给下一段当引导，`
-        + "最后得到的就是完整成片）。";
+      : `按当前阶段开关依次运行 ${active} 段，跳过 ${n - active} 段；接续遵循各段设置。`;
     /* 导出成片跟着禁：渲染中成片在变，拼到一半的片子不该被存；正在拼片
        时也别让人再点一次（dataset.busy 由 saveFilmMerged 自己挂牌）。 */
     btnSaveFilm.disabled = !n || busy || btnSaveFilm.dataset.busy === "1";
@@ -1056,7 +1086,7 @@ export function installMonitor(ui) {
     btnPushFilmLatent.disabled = !n || busy || btnPushFilmLatent.dataset.busy === "1";
     btnPushFilmLatent.title = !n ? "请先添加一些分段"
       : "把所有段拼成一条完整潜空间，从「整片潜空间」口送给下游"
-        + "（二采 / 时间分块重绘；会跑一次导演台读档案、但**不采样**）";
+        + "（不重跑一采；下游二采或时间分块重绘仍会采样）";
     /* 裁切剃刀：没段 / 渲染中都禁用（跟其它编辑按钮一致）。 */
     btnCut.disabled = !n || busy;
     /* 20261107：取消接续按钮的 disabled 也依赖 busy，但通用重绘入口不一定
@@ -1130,17 +1160,27 @@ export function installMonitor(ui) {
      → 同一条 paintFootRow 再画一次。DOM 只是呈现层，不持有状态 ——
      之前状态只存在 DOM 里，刷新一次就没了。 */
   function setRunResult(ok, text) {
-    if (ui.st) ui.st.run_result = { ok: !!ok, text: String(text) };
+    if (ui.st) ui.st.run_result = { ok: !!ok, text: String(text), at: Date.now() };
     paintFootRow();
     /* 落盘：commit 把 st 写进 h3_data widget。面板还没建好时 commit 不存在，
        那次结果就只在内存里（下次运行仍会重写一遍），不报错。 */
     try { ui.commit?.(); } catch (_) { /* 面板未就绪 */ }
   }
+  function clearRunResult() {
+    if (ui.st) ui.st.run_result = null;
+    // 结果属于整轮运行；切段快照不能把已经作废的旧结果带回面板。
+    for (const shot of ui.proj?.()?.shots || []) {
+      if (shot.state) shot.state.run_result = null;
+    }
+    paintFootRow();
+    ui.commit?.();
+  }
+  ui.clearRunResult = clearRunResult;
   /* 把存档里的结果画出来。DOM 已是同一份内容时不重画——每次重绘都重写
      textContent 会让 title 抖动、也会打断用户正在选中的文本。 */
   function paintRunResult() {
     const rr = ui.st && ui.st.run_result;
-    const text = (rr && rr.text) ? String(rr.text) : "";
+    const text = (rr && rr.text) ? (rr.at ? "" : "历史运行记录：") + String(rr.text) : "";
     const ok = !!(rr && rr.ok);
     if (runResult.textContent !== text) {
       runResult.textContent = text;

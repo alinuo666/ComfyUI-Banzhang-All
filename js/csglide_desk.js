@@ -396,18 +396,16 @@ app.registerExtension({
          盖回去的那份文本属于上一段，于是两段词对调/重复（20261023 编译式
          渲染改造一并收口：读段数据不要副作用）。 */
       let edSegDirty = false;
+      let segEditVersion = 0;
       let chipSig = "";
       let curRow = null;       // 当前段那一行档案（段号 / 锁定）
       const chipEls = new Map();   // 规范 token → chip 按钮（打字时只改 class）
 
       /* ---- 文案落 SQLite 工程库（20261012 方案 A）----
          commit 是所有编辑（打字 / 切段 / 预设 / 别名）的唯一收口，防抖 700ms
-         整份落 /cglide/store/desk。hydrate 灌库后 2s 内的 commit 不回写，
-         防止"刚读出又写回"的回声把库里的新数据盖掉。 */
+         整份落 /cglide/store/desk。 */
       let deskSaveTimer = 0;
-      let deskHydrateUntil = 0;
       function scheduleDeskSave() {
-        if (Date.now() < deskHydrateUntil) return;
         const p = castProject(node);
         const name = (p && p.name) || (st.chain && st.chain.name) || "";
         if (!name) return;
@@ -894,6 +892,8 @@ app.registerExtension({
          开关变化），onChange 直接拿纯文本；外部 setText 不回声。 */
       const onGlobalChange = (t) => { st.global = t; paintChips(); paintCheck(); commit(); };
       const onSegChange = (t) => {
+        segEditVersion += 1;
+        const editVersion = segEditVersion;
         /* 编辑器此刻比段表新 —— 这是「收口写回」唯一被允许的情形。 */
         edSegDirty = true;
         /* 写段词必须用「编辑器画面绑定的段」（edSegKey，随每次 setSegText
@@ -919,12 +919,11 @@ app.registerExtension({
             if (r === null && !segPushWarned[k]) {
               segPushWarned[k] = true;
               toast("⚠ 本段词没写进中央库——本次运行不受影响，但重启 ComfyUI 后这段词会丢失", true);
-            } else if (r && r.conflict && !segPushWarned[k]) {
+            } else if (r && r.conflict && !segPushWarned[k] && editVersion === segEditVersion) {
               /* 两次都撞 = 真并发（另一个窗口/节点也在改这一段）。
                  不硬盖：把中央真值收下，让用户自己看。 */
               segPushWarned[k] = true;
-              st.segs[k] = r.text || "";
-              toast("⚠ 本段词正在别处被改，已按中央库的版本刷新，请确认后再改", true);
+              toast("⚠ 本段词正在别处被改，当前编辑未保存，请确认后重试", true);
             } else if (r !== null && !r.conflict && segPushWarned[k]) {
               segPushWarned[k] = false;
             }
@@ -1020,10 +1019,10 @@ app.registerExtension({
              不依赖序列化 widget，存盘格式再变也不会让改写拿到空清单。 */
           const slotIdx = (node.inputs || []).findIndex((s) => s && s.name === "参考素材");
           const rack = slotIdx >= 0 ? node.getInputNode?.(slotIdx) : null;
-          const st = rack?.gmr?.st;
-          const refs = st && st.slots
-            ? JSON.stringify({ slots: st.slots, fps: st.fps || 0,
-                               audio_out: st.audio_out || 0 })
+          const rackState = rack?.gmr?.st;
+          const refs = rackState && rackState.slots
+            ? JSON.stringify({ slots: rackState.slots, fps: rackState.fps || 0,
+                               audio_out: rackState.audio_out || 0 })
             : "";
           const res = await api.fetchApi("/csglide_desk/rewrite", {
             method: "POST",
@@ -1046,8 +1045,10 @@ app.registerExtension({
           catch (_) { throw new Error(`HTTP ${res.status}：${raw.slice(0, 120)}`); }
           if (!res.ok || d.error) throw new Error(d.error || ("HTTP " + res.status));
           if (!d.text || d.text === t) { sayCheck("模型没有产出改动，本段保持原样"); return; }
+          if (String(st.segs[k] || "") !== t) { sayCheck("改写期间文案已修改，结果未覆盖当前内容", true); return; }
+          segEditVersion += 1;
           st.segs[k] = d.text;
-          setSegText(d.text, null, k);
+          if (edSegKey === k) setSegText(d.text, null, k);
           const nm = projName();
           if (nm && k) pushSegText(nm, k, d.text, { allowEmpty: true, retryOnConflict: true });
           commit();
@@ -1178,6 +1179,7 @@ app.registerExtension({
           事件 payload 是导演台刚广播的权威意图，直接采用；store 回声到达后
           仍会再跑一次 switchSeg 做后端权威校正（含锁定段被钉住的场景）。 */
       async function switchSeg(optimisticClip) {
+        const editVersion = segEditVersion;
         /* 独立模式（画布上没有导演台）：先向后端认段，拿到真 cid 再往下走。
            有导演台时这里什么都不做（castProjectSafe 缓存探测，不重复 warn）。
            认段是幂等的：已有 clip 直接返回，后端不可用也不会挡渲染。 */
@@ -1248,6 +1250,7 @@ app.registerExtension({
           }
         }
         await syncFromCast();
+        if (editVersion !== segEditVersion) return;
         let k = optimisticClip ? String(optimisticClip) : keyOf();
         /* 乐观首跳：store 还停在旧段、syncFromCast 把 st.chain.clip 写成了旧值，
            这里必须改写成事件带来的目标段，否则随后 commit 落盘的 desk_data
@@ -1265,6 +1268,7 @@ app.registerExtension({
           if (!k) { segNeedRetry = true; kickSegUntilReady(); }
           return;
         }   // 已在本段且已对过账，去重不重复刷
+        if (edSegDirty && edSegKey === k) return; // 本段正在编辑，不拿旧档案覆盖
         /* 乐观首跳已把账切到目标段并当场存过旧段；这里只在「账还没切」的
            正常路径存旧段。curKey===k 时再存一遍是无害重复，跳过。 */
         if (curKey && edReady && curKey !== k) {
@@ -1291,6 +1295,7 @@ app.registerExtension({
               · 中央没词而本地有 → 本地是用户刚打进去的，以本地为准并立刻
                 补回中央，否则一刷新又没了。 */
         const central = isRealCid(k) ? await pullSegFor(k) : null;
+        if (editVersion !== segEditVersion) return;
         /* 临时键（新段还没登记）不去问中央：它不是段身份，问了只会让后端给
            一个不存在的 cid 现场补建 binding，反而造出一条假档案行。 */
         /* 无条件打：以前只在"不一致"时打，一致就静默，用户根本看不出 B1 在跑。
@@ -1371,6 +1376,7 @@ app.registerExtension({
           若此刻正编辑源段，先把编辑器最新文本收口；已在目标段则同步上屏。 */
       function copySegWords(srcCid, dstCid) {
         if (!dstCid) return false;
+        segEditVersion += 1;
         srcCid = srcCid ? String(srcCid) : "";
         dstCid = String(dstCid);
         if (curKey && curKey === srcCid && edReady && edSegDirty) st.segs[srcCid] = edSeg.getText();
@@ -1387,6 +1393,7 @@ app.registerExtension({
           没有临时段词也不影响（addShot 新段本来就是空）。 */
       function claimSegWords(tempId, clipId) {
         if (!clipId) return false;
+        segEditVersion += 1;
         tempId = tempId ? String(tempId) : "";
         clipId = String(clipId);
         if (curKey && curKey === tempId && edReady && edSegDirty) st.segs[tempId] = edSeg.getText();
@@ -1553,6 +1560,7 @@ app.registerExtension({
       /** 把一段词写进某一段（本段顺带刷新编辑器），并落工程库。 */
       function writeSeg(cid, text) {
         if (!cid) return false;
+        segEditVersion += 1;
         st.segs[cid] = text;
         if (cid === curKey) setSegText(text);
         const nm = projName();
@@ -1697,7 +1705,6 @@ app.registerExtension({
          chain 带偏——只恢复 global/segs/alias/presets 这些文案内容。 */
       const hydrateDesk = (desk) => {
         if (!desk || typeof desk !== "object") return false;
-        deskHydrateUntil = Date.now() + 2000;   // 抑制 hydrate 触发的 commit 回写
         const incoming = JSON.parse(JSON.stringify(desk));
         const chain = Object.assign({}, st.chain || {}, incoming.chain || {});
         st = Object.assign(blankState(), incoming, { chain });

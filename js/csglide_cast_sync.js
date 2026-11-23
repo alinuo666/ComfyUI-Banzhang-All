@@ -108,18 +108,24 @@ export function installSync(ui) {
      前端不再扫描全部历史、不再盲推文件名；latent / cont / segment film 都由
      后端按本次 prompt 拓扑和统一编号归档。 */
   async function collectRun(shot, promptId) {
-    const name = ui.castName();
-    if (!name || !shot || !shot.clip || !promptId) {
-      throw new Error("中央收片缺少工程名、段落 id 或 prompt_id");
-    }
+    if (!promptId) throw new Error("中央收片缺少 prompt_id");
+    /* 片名/段 id 只作提示（20261123 身份统一）：后端以提交时冻结在历史图里的
+       身份为准，跑批中途切工程/改段号也能收对地方，这里不再硬拦。 */
     const res = await api.fetchApi("/cglide/chain/collect_run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, id: shot.clip, prompt_id: promptId }),
+      body: JSON.stringify({
+        name: ui.castName() || "",
+        id: (shot && shot.clip) || "",
+        prompt_id: promptId,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) {
       throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    if (data.identity_warning) {
+      console.warn("[H3 Studio] 收片身份已纠正：", data.identity_warning);
     }
     return data;
   }
@@ -281,25 +287,33 @@ export function installSync(ui) {
   /** 改一段的时长。时间轴拖动与段菜单「直接改帧数」共用同一条后端路由 ——
       档案落盘、下一段的待办标记、面板时长同步都发生在那里；两处各走一条路
       迟早会不一致。 */
+  const resizeRequests = new Map();
   async function applyFrames(clipId, index, frames) {
     const name = ui.castName();
     if (!name) throw new Error("还没有片名 —— 先在「工程」面板里填一个");
     const p = ui.proj();
+    const owner = p.shots?.find((s) => s && s.clip === clipId);
+    const priorLength = owner?.state?.length;
+    const request = Symbol();
+    resizeRequests.set(clipId, request);
     const res = await api.fetchApi("/cglide/chain/resize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, id: clipId, frames }),
     });
     const data = await res.json().catch(() => ({}));
+    if (resizeRequests.get(clipId) !== request) return data;
+    resizeRequests.delete(clipId);
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    // 旧响应只属于发起时的段与编辑版本，不能把新输入或另一个工程覆盖回去。
+    if (ui.proj() !== p || ui.castName() !== name || owner?.state?.length !== priorLength) return data;
     /* 改的是**当前段** → 吸附后的帧数要回写面板状态并重画右上「这一段」卡：
-       档案已改而面板还显示旧时长，用户会以为没改成功。按「段 id 精确对号」或
-       「下标对号」任一命中即算当前段（p.idx 在工程 JSON 里可能是字符串，
-       === 比下标会永远失配）。非当前段不用动：切段时各自从档案读回。 */
+       档案已改而面板还显示旧时长，用户会以为没改成功。段 id 优先；仅当前段
+       还没有 id 时才退回下标，避免异步返回时下标已被另一段占用。 */
     const idx = Number(p.idx);
     const curShot = p.shots && p.shots[p.idx];
     const isCur = (curShot && curShot.clip === clipId)
-      || (idx >= 0 && index === idx);
+      || (!curShot?.clip && idx >= 0 && index === idx);
     /* 后端"长度没变"（changed:false）时不带 to 字段 —— 但请求值本身就是
        吸附后的档案值，照样能用来对齐面板（不然"面板 90、档案 243、又拖回
        243"这种局面面板永远追不上，下次渲染还是会拿 90 覆盖档案）。 */
@@ -317,7 +331,6 @@ export function installSync(ui) {
        下一次渲染就把拖好的时长**静默覆盖回去**。两边写齐，冲突不再产生
        （syncCheck 弹窗从"每次渲染都要对账"退回纯保险）。 */
     if (finalTo && Array.isArray(p.shots)) {
-      const owner = p.shots.find((s) => s && s.clip === clipId);
       if (owner && owner.state && owner.state.length !== finalTo) {
         owner.state.length = finalTo;
         ui.commit();

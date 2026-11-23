@@ -33,12 +33,12 @@ class BZ_RippleOutput:
     RETURN_NAMES = ("images", "audio", "frame_rate", "comparison")
     OUTPUT_TOOLTIPS = (
         "生成的成片画面（已去掉模型补边）。",
-        "这段窗口的原声音频。",
+        "这段窗口的音频。",
         "帧率，固定 24.0。",
         "左源片、右成片的并排对比画面。",
     )
     DESCRIPTION = (
-        "把生成的成片连同原声音频保存为 MP4，并另存一份源片 | 成片对比。"
+        "把生成的成片连同原片音频保存为 MP4，并另存一份源片 | 成片对比。"
         "同时把画面继续输出，方便再接放大、转格式等节点。"
     )
 
@@ -47,7 +47,7 @@ class BZ_RippleOutput:
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "采样器解码后的生成画面。"}),
-                "ripple": ("VIDEO", {"tooltip": "接「选片段」的 🎬 窗口视频输出口，用来裁掉补边和取音频。"}),
+                "ripple": ("VIDEO", {"tooltip": "接「时间轴选段」的 🎬 视频输出口，用来裁掉补边和取音频。"}),
             },
             "optional": {
                 "save": (list(SAVE_CHOICES), {"default": SAVE_CHOICES[0],

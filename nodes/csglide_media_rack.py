@@ -197,7 +197,22 @@ class CSGlideH3MediaRack:
 
     @classmethod
     def IS_CHANGED(cls, rack_data, **kwargs):
-        return rack_data
+        from ..core.csglide_assets import resolve_asset
+        data = parse_rack_data(rack_data)
+        stamps = []
+        for slots in data["slots"].values():
+            for slot in slots:
+                ref = slot.get("file")
+                if not ref:
+                    continue
+                path = resolve_asset(ref)
+                try:
+                    stat = os.stat(path) if path else None
+                except OSError:
+                    stat = None
+                stamps.append((ref, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                              if stat else (ref, None))
+        return json.dumps([rack_data, stamps], ensure_ascii=False)
 
 
 class CSGlideMediaRackVideoFrames:

@@ -3,16 +3,40 @@
 import { detectStages } from "./bz_group_detect.js";
 import { nodeList } from "./bz_group_utils.js";
 
-const NW = 140, NH = 58, GAPX = 38, PADX = 16, TOP = 10;
-const LANE_DY = 16, BEND = 12;
+const NW = 140, NH = 44, GAPX = 38, PADX = 16, TOP = 10;
+const LANE_DY = 12, BEND = 10;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const TYPE_LABELS = { IMAGE: "图像", VIDEO: "视频", AUDIO: "音频", LATENT: "潜空间",
+  MODEL: "模型", CLIP: "文本编码器", VAE: "编解码器", CONDITIONING: "条件",
+  MASK: "遮罩", STRING: "文本", INT: "整数", FLOAT: "数值", BOOLEAN: "开关" };
+function typeLabel(type) {
+  return String(type || "").split(/\s*\/\s*|,/).map((t) => TYPE_LABELS[t.toUpperCase()]
+    || (/^[\u3400-\u9fff\s]+$/.test(t) ? t : "其他数据")).join("／");
+}
 
 function el(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
   return node;
 }
-function readState(host) { return host.properties?.bzStageFlow || { sel: null, toggles: {} }; }
+function readState(host) {
+  const state = host.properties?.bzStageFlow || { sel: null };
+  state.toggles ||= {};
+  return state;
+}
+function migrateState(host, detected) {
+  const state = readState(host);
+  if (!state.postToggles) return state;
+  const posts = new Set((detected.observers || []).map((s) => String(s.id)));
+  const stages = new Set(detected.stages.map((s) => String(s.id)));
+  // 旧记录冲突时保留当前角色实际使用的值；迁移后角色变化不再改变开关。
+  for (const [id, value] of Object.entries(state.postToggles)) {
+    if (posts.has(id) || (!stages.has(id) && !(id in state.toggles))) state.toggles[id] = value;
+  }
+  delete state.postToggles;
+  writeState(host, state);
+  return state;
+}
 function writeState(host, state) {
   if (!host.properties) host.properties = {};
   host.properties.bzStageFlow = state;
@@ -46,7 +70,17 @@ function syncMute(host, detected) {
   const byId = {};
   nodeList(graph).forEach((n) => { byId[n.id] = n; });
   let changed = false;
-  detected.stages.forEach((s) => {
+  // 改组、拖出组或删除组后，清理本扩展遗留的静音，避免节点永久停在旧状态。
+  const controlled = [...detected.stages, ...(detected.observers || []).filter((g) => g.controllable)];
+  const muted = new Set(controlled.filter((s) => !isEnabled(state, s.id))
+    .flatMap((s) => s.members.map(String)));
+  for (const [id, mode] of Object.entries(orig)) {
+    if (muted.has(String(id))) continue;
+    const n = byId[id];
+    if (n?.mode === 2) { n.mode = mode; changed = true; }
+    delete orig[id];
+  }
+  controlled.forEach((s) => {
     const on = isEnabled(state, s.id);
     s.members.forEach((id) => {
       const n = byId[id];
@@ -71,7 +105,7 @@ function syncMute(host, detected) {
    三采以上并入 s3；video 阶段的产物登记在 s3 成片。与后端读档口同一套 s1/s2/s3。 */
 export function stageArchiveSlot(stage, stages) {
   if (stage.kind === "video") return "s3";
-  const li = stages.filter((s) => s.kind === "latent").indexOf(stage);
+  const li = stages.filter((s) => s.kind === "latent").findIndex((s) => s.id === stage.id);
   return "s" + Math.min(Math.max(li + 1, 1), 3);
 }
 
@@ -83,9 +117,10 @@ function stageStatus(stage, stages, host) {
   if (runId != null && stage.members.some((m) => String(m) === String(runId))) return "running";
   const slot = (host.bzStageFiles || {})[stageArchiveSlot(stage, stages)];
   const has = slot && (stage.kind === "video" ? slot.film : slot.latent);
+  if (has && stage.kind === "video" && stages.filter((s) => s.kind === "video").length > 1) return "shared";
   return has ? "cached" : "ready";
 }
-const STATUS_TEXT = { running: "运行中", cached: "已缓存 · 有档可读", ready: "待运行 · 尚无存档" };
+const STATUS_TEXT = { off: "已关闭 · 本次跳过", running: "运行中", cached: "已缓存 · 有档可读", shared: "三采档位共用；优先收取选中的视频阶段，不能从灯判断文件来源", ready: "待运行 · 尚无存档" };
 
 /* 显示名直接用画布组标题，忠实于用户命名且不重名 */
 function nameOf(stage) { return stage.title; }
@@ -102,22 +137,25 @@ function fromText(stage, stages) {
 function conflict(a, b) { return !(a[1] <= b[0] || b[1] <= a[0]); }
 function pickLane(lanes, span) {
   for (let i = 0; i < lanes.length; i += 1) {
-    if (!lanes[i].some((s) => conflict(s, span))) return i;
+    if (!lanes[i].some((s) => s.source !== span.source && conflict(s, span))) return i;
   }
   return -1;
 }
 
 /* level：from 最长路径，同 level 多节点即并列分叉 */
 function stageLevels(stages) {
-  const lv = {};
-  stages.forEach((s) => { lv[s.id] = 0; });
-  for (let p = 0; p < stages.length; p += 1) {
-    stages.forEach((s) => {
-      if (s.from.length) {
-        lv[s.id] = Math.max(lv[s.id], ...s.from.map((f) => (lv[f] || 0) + 1));
-      }
-    });
+  const lv = {}, visiting = new Set();
+  const byId = new Map(stages.map((s) => [s.id, s]));
+  function level(id) {
+    if (lv[id] != null) return lv[id];
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    const parents = (byId.get(id)?.from || []).filter((f) => byId.has(f));
+    lv[id] = parents.length ? Math.max(...parents.map((f) => level(f) + 1)) : 0;
+    visiting.delete(id);
+    return lv[id];
   }
+  stages.forEach((s) => level(s.id));
   return lv;
 }
 
@@ -148,12 +186,13 @@ function layout(stages) {
     const base = { from: f, to: s.id, type: s.edgeTypes?.[k] || "",
       isVideo: s.kind === "video", inferred: !!s.edgeInferred?.[k] };
     if (ti === fi + 1) { edges.push({ ...base, laneY: null }); return; }
-    const span = [fi, ti];
+    const span = [Math.min(fi, ti), Math.max(fi, ti)];
+    span.source = String(f) + ":" + base.type;
     let dir = "down", laneNo = pickLane(lanes.down, span);
     if (laneNo < 0) { dir = "up"; laneNo = pickLane(lanes.up, span); }
     if (laneNo < 0) {
-      if (dir === "down") { laneNo = lanes.down.length; lanes.down.push([]); }
-      else { laneNo = lanes.up.length; lanes.up.push([]); }
+      dir = lanes.down.length <= lanes.up.length ? "down" : "up";
+      laneNo = lanes[dir].length; lanes[dir].push([]);
     }
     lanes[dir][laneNo].push(span);
     edges.push({ ...base, dir, lane: laneNo });
@@ -195,13 +234,13 @@ function drawEdges(svg, stages, lay) {
     const path = el("path", { class: `edge ${e.isVideo ? "video" : ""}${e.inferred ? " inferred" : ""}`, d: info.d });
     if (e.inferred) {
       const tip = el("title");
-      tip.textContent = `${e.isVideo ? "VIDEO" : "LATENT"} · 无真实连线，按标题序号推断`;
+      tip.textContent = `${typeLabel(e.type)} · 无真实连线，按标题序号推断`;
       path.appendChild(tip);
     }
     svg.appendChild(path);
     const mx = (lay.pos[e.from].x + NW + lay.pos[e.to].x) / 2;
     const t = el("text", { class: `elabel ${e.isVideo ? "video" : ""}${e.inferred ? " inferred" : ""}`, x: mx, y: info.labelY });
-    t.textContent = e.inferred ? "推断" : (e.isVideo ? "VIDEO" : "LATENT");
+    t.textContent = e.inferred ? "推断" : typeLabel(e.type);
     svg.appendChild(t);
     t.setAttribute("x", mx - t.getBBox().width / 2);
   });
@@ -209,11 +248,14 @@ function drawEdges(svg, stages, lay) {
 
 function drawNodes(svg, stages, pos, state, host, onChange) {
   stages.forEach((s) => {
+    const post = s.kind === "post";
     const p = pos[s.id], on = isEnabled(state, s.id);
-    const status = stageStatus(s, stages, host);
+    const status = !on ? "off" : post ? (s.members.some((m) => String(m) === String(host.bzRunningNodeId)) ? "running" : "ready")
+      : stageStatus((host.bzStageDetected?.stages || stages).find((x) => x.id === s.id) || s,
+        (host.bzStageDetected?.stages || stages).filter((x) => x.kind !== "post"), host);
     const g = el("g", { class: `tnode${on ? "" : " off"}${state.sel === s.id ? " sel" : ""}` });
     const tip = el("title");
-    tip.textContent = `${s.title} · ${STATUS_TEXT[status]}\n`
+    tip.textContent = post ? `${s.title} · ${on ? "已开启" : STATUS_TEXT.off}\n${fromText(s, stages)}\n关闭时画布组内节点静音灰显，提交按真实接线旁路` : `${s.title} · ${STATUS_TEXT[status]}\n`
       + "点节点＝时间轴切到对应档案；右上开关＝阶段启停（关闭时整组节点在画布静音灰显、本次不跑）";
     g.appendChild(tip);
     g.appendChild(el("rect", { class: `node-rect ${s.kind}`, x: p.x, y: p.y, width: NW, height: NH, rx: 10 }));
@@ -221,25 +263,35 @@ function drawNodes(svg, stages, pos, state, host, onChange) {
     const name = el("text", { class: "tname", x: p.x + 22, y: p.y + 17 });
     name.textContent = nameOf(s);
     g.appendChild(name);
-    const kind = el("text", { class: "tkind", x: p.x + 12, y: p.y + 32 });
-    kind.textContent = s.kind === "video" ? "视频域超分" : "潜空间重采样";
-    g.appendChild(kind);
-    const from = el("text", { class: "tfrom", x: p.x + 12, y: p.y + 46 });
-    from.textContent = fromText(s, stages);
+    const from = el("text", { class: "tfrom", x: p.x + 12, y: p.y + 33 });
+    from.textContent = on ? fromText(s, stages) : STATUS_TEXT.off;
     g.appendChild(from);
     g.appendChild(el("rect", { class: `sw ${on ? "on" : ""}`, "data-sw": s.id,
       x: p.x + NW - 36, y: p.y + 7, width: 28, height: 14, rx: 7 }));
     g.appendChild(el("circle", { class: `sw-knob ${on ? "on" : ""}`, "data-sw": s.id,
       cx: p.x + NW - (on ? 15 : 29), cy: p.y + 14, r: 5 }));
-    g.onclick = (ev) => {
-      if (ev.target.dataset.sw) {
-        if (!s.from.length) { host.bzOnBlockedToggle?.(s); return; } /* 起点阶段不可关 */
-        state.toggles[s.id] = on ? false : true;
-        writeState(host, state); render(host, onChange);
-        return;
+    const toggle = (ev) => {
+      ev.stopPropagation?.();
+      if (host.bzStageBusy?.()) { host.bzOnBlockedToggle?.(s, "busy"); return; }
+      if (post) {
+        if (!s.controllable) { host.bzOnBlockedToggle?.(s, "group"); return; }
       }
+      state.toggles[s.id] = !on;
+      writeState(host, state); host.bzOnGroupToggle?.(); render(host, onChange);
+    };
+    // SVG 开关直接处理点击，避免依赖父卡片的选择事件和 dataset 命中。
+    for (const control of Array.from(g.children).filter((x) => x.getAttribute?.("data-sw") != null || x.dataset?.sw != null)) {
+      control.onclick = toggle;
+      control.onpointerdown = (ev) => ev.stopPropagation?.();
+    }
+    g.onclick = (ev) => {
+      ev.stopPropagation?.();
+      if (ev.target?.dataset?.sw != null || ev.target?.getAttribute?.("data-sw") != null) { toggle(ev); return; }
+      if (host.bzStageBusy?.()) { host.bzOnBlockedToggle?.(s, "busy"); return; }
+      if (post) return;
+      const previous = state.sel;
       state.sel = s.id; writeState(host, state);
-      host.bzOnSelect?.(s);
+      host.bzOnSelect?.(s, previous);
       render(host, onChange);
     };
     svg.appendChild(g);
@@ -251,16 +303,19 @@ function render(host, onChange) {
   const svgBox = container.querySelector(".topo");
   if (svgBox) svgBox.innerHTML = "";
   const detected = detectStages(graph);
+  host.bzPostGroups = detected.observers || [];
   paintAutoPorts(host, detected.mode);
-  if (detected.mode === "fallback") {
+  if (detected.mode === "fallback" && !detected.mirror?.length) {
     container.dataset.mode = "fallback";
     host.bzStageDetected = null;
     if (onChange) onChange(null);
     return false;
   }
   container.dataset.mode = "group";
-  const state = readState(host);
-  const lay = layout(detected.stages);
+  const state = migrateState(host, detected);
+  const visual = detected.mirror || detected.stages;
+  host.bzStageDetected = detected.mode === "group" ? detected : null;
+  const lay = layout(visual);
   let svg = svgBox;
   if (!svg) {
     svg = el("svg", { class: "topo" });
@@ -269,11 +324,11 @@ function render(host, onChange) {
   svg.setAttribute("viewBox", `0 0 ${lay.width} ${lay.height}`);
   svg.setAttribute("width", lay.width);
   svg.setAttribute("height", lay.height);
-  drawEdges(svg, detected.stages, lay);
-  drawNodes(svg, detected.stages, lay.pos, state, host, onChange);
-  host.bzStageDetected = detected;
+  drawEdges(svg, visual, lay);
+  drawNodes(svg, visual, lay.pos, state, host, onChange);
+  host.bzStageDetected = detected.mode === "group" ? detected : null;
   syncMute(host, detected);
-  if (onChange) onChange(detected);
+  if (onChange) onChange(host.bzStageDetected);
   return true;
 }
 
@@ -290,4 +345,10 @@ export function enabledStages(node) {
   if (!detected) return [];
   const state = readState(node);
   return detected.stages.filter((s) => isEnabled(state, s.id));
+}
+
+export function disabledPostGroups(node) {
+  if (!node) return [];
+  const state = readState(node);
+  return (node.bzPostGroups || []).filter((g) => !isEnabled(state, g.id));
 }

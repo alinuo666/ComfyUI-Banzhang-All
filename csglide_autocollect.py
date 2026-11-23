@@ -22,6 +22,7 @@
 """
 import threading
 import time
+import json
 
 _seen = set()
 _seen_lock = threading.Lock()
@@ -42,35 +43,13 @@ def _first_time(pid):
 
 
 def _target_from_history(entry):
-    """从本次执行的历史里取 (工程名, 段 id)；取不到返回 ("", "")。"""
-    from .csglide_chain import _history_graph
-    from .nodes.csglide_cast import parse_h3_data
+    """从本次执行的历史里取 (工程名, 段 id)；取不到返回 ("", "")。
 
-    graph = _history_graph(entry) or {}
-    for spec in graph.values():
-        if (spec or {}).get("class_type") != "CSGlideCastCS":
-            continue
-        raw = (spec.get("inputs") or {}).get("h3_data")
-        # 外接 h3_data（接线）时这里不是字符串而是 [节点, 输出口]，本钩子不猜
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-        cfg = parse_h3_data(raw)
-        ch = (cfg or {}).get("chain") or {}
-        name = str(ch.get("name") or "").strip()
-        cid = str(ch.get("clip") or "").strip()
-        shot = str(ch.get("shot") or "").strip()
-        if name and not cid and shot:
-            # 提交编译主动清空 chain.clip（bz_prompt_build.js），后端只认 shot uid。
-            # 不补这一步会被误判成「裸跑」而跳过整轮收片（20261107 真机日志）。
-            try:
-                from . import csglide_chain as _c
-                from .core.csglide_ticket import resolve_clip_id
-                cid = resolve_clip_id(name, "", shot, _c.film_summary)
-            except Exception:
-                cid = ""
-        if name and cid:
-            return name, cid
-    return "", ""
+    20261123 起与手动收片共用 csglide_chain._identity_from_history，
+    三条收片路径同一口径，不再各养一份认段逻辑。
+    """
+    from .csglide_chain import _identity_from_history
+    return _identity_from_history(entry)
 
 
 def _collect_async(prompt_id):
@@ -83,9 +62,18 @@ def _collect_async(prompt_id):
             break
         time.sleep(_WAIT)
     if not entry:
+        print("[班长全家桶] ⚠ 自动收片未找到运行历史：%s" % prompt_id)
+        with _seen_lock:
+            _seen.discard(prompt_id)
         return
 
     graph = chain._history_graph(entry) or {}
+    for spec in graph.values():
+        if (spec or {}).get("class_type") != "CSGlideCastCS":
+            continue
+        raw = (spec.get("inputs") or {}).get("h3_data")
+        if isinstance(raw, str) and json.loads(raw).get("push_film_latent") is True:
+            return          # 整片加工结果不能自动收成当前段。
     has_cast = any((s or {}).get("class_type") == "CSGlideCastCS"
                    for s in graph.values())
     name, cid = _target_from_history(entry)
@@ -104,6 +92,29 @@ def _collect_async(prompt_id):
 
 def _install():
     """包装 send_sync，在执行结束事件上挂自动收片（只在后台线程里跑）。"""
+    # task_done 在历史落库后调用，且不依赖浏览器 client_id。
+    # 保留事件钩子作为旧版兼容，两个入口共用 prompt_id 去重。
+    try:
+        from execution import PromptQueue
+        original_done = PromptQueue.task_done
+        if not getattr(original_done, "_bz_autocollect", False):
+            def _done(queue, item_id, *args, **kwargs):
+                with queue.mutex if hasattr(queue, "mutex") else _seen_lock:
+                    item = queue.currently_running.get(item_id)
+                    pid = str(item[1]) if item and len(item) > 1 else ""
+                result = original_done(queue, item_id, *args, **kwargs)
+                try:
+                    if pid and _first_time(pid):
+                        threading.Thread(target=_collect_async, args=(pid,), daemon=True).start()
+                except Exception as exc:
+                    with _seen_lock:
+                        _seen.discard(pid)
+                    print("[班长全家桶] ⚠ 自动收片启动失败（%s）：%s" % (pid, exc))
+                return result
+            _done._bz_autocollect = True
+            PromptQueue.task_done = _done
+    except Exception as exc:
+        print("[班长全家桶] ⚠ 队列完成收片钩子安装失败：%s" % exc)
     try:
         from server import PromptServer
     except Exception:

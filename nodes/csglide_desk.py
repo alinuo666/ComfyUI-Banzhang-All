@@ -407,7 +407,7 @@ class CSGlideDeskCS:
         word_src = "本次提交"
         # 新段还没登记时，编译层把段词放在 pending_seg 里随本次提交走；
         # 它不进段表、也不写中央库（临时键被 isRealCid 挡住）。
-        if not seg and st.get("pending_seg"):
+        if not seg_key_present and not seg and st.get("pending_seg"):
             seg = str(st.get("pending_seg") or "")
             word_src = "待登记段(本次提交)"
         # ⚠ 20261031：**删掉了按 shot（uid）找词的那条兜底**。
@@ -449,7 +449,7 @@ class CSGlideDeskCS:
                         word_src = "中央段档案兜底"
                         print("[H3 文案台] 本段词本次提交里没有，已从中央段档案兜底（%d 字）"
                               % len(seg))
-                if not g:
+                if "global" not in st:
                     _desk = _store.load_desk(_d) or {}
                     if isinstance(_desk, dict) and "global" in _desk:
                         g = str(_desk.get("global") or "")
@@ -544,7 +544,7 @@ try:
                 return web.json_response({"error": str(e)}, status=400)
             # 参考图来源：前端按钮把媒体架 rack_data 直接传上来（优先）；
             # 没传就退回 compose 执行时缓存的兜底；两个都没有则纯文本改写。
-            refs = str(body.get("refs") or "") or CSGlideDeskCS._rw_refs or ""
+            refs = str(body.get("refs") or "") if "refs" in body else (CSGlideDeskCS._rw_refs or "")
             imgs = _rewrite_ref_images(refs, _log)
             _log("参考图 %d 张" % len(imgs))
             if not imgs:

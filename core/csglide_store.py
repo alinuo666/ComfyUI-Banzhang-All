@@ -1112,6 +1112,7 @@ def delete_clip_doc(d, cid):
             conn.execute("DELETE FROM shot_state WHERE cid=?", (str(cid),))
             conn.execute("DELETE FROM rack_slots WHERE cid=?", (str(cid),))
             conn.execute("DELETE FROM rack_refs WHERE cid=?", (str(cid),))
+            conn.execute("DELETE FROM meta WHERE key=?", ("rack.empty." + str(cid),))
             conn.execute("DELETE FROM shot_versions WHERE cid=?", (str(cid),))
             conn.execute("DELETE FROM run_receipts WHERE cid=?", (str(cid),))
             conn.execute("DELETE FROM segment_bindings WHERE cid=?", (str(cid),))
@@ -1674,6 +1675,10 @@ def load_rack(d, cid):
                 "SELECT kind,slot_idx,file,params FROM rack_slots WHERE cid=? "
                 "ORDER BY kind,slot_idx", (cid,)).fetchall()
             if not rows:
+                empty = _meta_get(conn, "rack.empty." + cid)
+                if isinstance(empty, dict):
+                    return {"slots": {"images": [], "videos": [], "audios": []},
+                            "fps": empty.get("fps", 0), "audio_out": empty.get("audio_out", 0)}
                 return None
         slots = {"images": [], "videos": [], "audios": []}
         maxidx = {"images": -1, "videos": -1, "audios": -1}
@@ -1741,6 +1746,12 @@ def save_rack(d, cid, rack):
             conn.executemany(
                 "INSERT INTO rack_refs(cid,kind,slot_idx,hash,alias,updated_at) "
                 "VALUES(?,?,?,?,?,?)", refs)
+            if rows:
+                conn.execute("DELETE FROM meta WHERE key=?", ("rack.empty." + cid,))
+            else:
+                _meta_set(conn, "rack.empty." + cid,
+                          {"fps": (rack or {}).get("fps", 0),
+                           "audio_out": (rack or {}).get("audio_out", 0)})
             if (rack or {}).get("fps") is not None:
                 _meta_set(conn, "rack.fps", rack.get("fps"))
             if (rack or {}).get("audio_out") is not None:
@@ -1761,6 +1772,8 @@ def load_all_racks(d):
         cids = [r[0] for r in conn.execute(
             "SELECT DISTINCT cid FROM rack_refs "
             "UNION SELECT DISTINCT cid FROM rack_slots").fetchall()]
+        cids.extend(r[0][len("rack.empty."):] for r in conn.execute(
+            "SELECT key FROM meta WHERE key LIKE 'rack.empty.%'").fetchall())
     return {cid: load_rack(d, cid) for cid in cids}
 
 
@@ -2613,6 +2626,7 @@ def register_routes():
                      "desk_text": _desk_text_of(d, cid), "status": "orphan"}
             order = all_clip_cids(d)
             out = dict(b)
+            out["rack_present"] = load_rack(d, cid) is not None
             out["index"] = order.index(cid) + 1 if cid in order else 0
             out["order"] = order
             out["clip_name"] = clip.get("name") or ""
@@ -2660,7 +2674,9 @@ def register_routes():
             request.query.get("action") or None)
         return _json_response({"events": rows})
 
-    @PromptServer.instance.routes.post("/cglide/store/snapshot")
+    # 一路径一 method（20261119）：写口单独成路径，与下面的 GET /snapshot、
+    # DELETE /snapshot_delete 分开（根因见 _route_store_snapshot_clear 上方注释）。
+    @PromptServer.instance.routes.post("/cglide/store/snapshot_add")
     async def _route_store_snapshot_add(request):
         import asyncio
         try:
@@ -2698,7 +2714,12 @@ def register_routes():
             full, src)
         return _json_response({"snapshots": rows})
 
-    @PromptServer.instance.routes.delete("/cglide/store/snapshots")
+    # 破坏性口必须与只读口分路径（20261119，一路径一 method 铁律）：
+    # 原先它和上面的 GET /cglide/store/snapshots 同路径，而 ComfyUI-LG_HotReload
+    # 重载时按路径（不看 method）覆盖 handler —— 实测 GET 会打到这个「清空还原点」
+    # 的处理器上（返回 {"ok":true,"removed":N}）。前端今天不调它，但谁接了这条
+    # GET、甚至浏览器地址栏手输一次，就是静默删掉整片工程的还原点。
+    @PromptServer.instance.routes.delete("/cglide/store/snapshots_clear")
     async def _route_store_snapshot_clear(request):
         """清空还原点（?source=undo 只清撤销栈镜像）。"""
         import asyncio
@@ -2725,7 +2746,9 @@ def register_routes():
             return _json_response({"error": "没有这个还原点"}, 404)
         return _json_response(out)
 
-    @PromptServer.instance.routes.delete("/cglide/store/snapshot")
+    # 同 /snapshots_clear：与上面的 GET /cglide/store/snapshot 分路径，
+    # 否则热重载后「读一条还原点」会变成「删一条还原点」。
+    @PromptServer.instance.routes.delete("/cglide/store/snapshot_delete")
     async def _route_store_snapshot_del(request):
         import asyncio
         name = str(request.query.get("name") or "").strip()

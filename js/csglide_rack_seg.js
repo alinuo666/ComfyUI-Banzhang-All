@@ -10,7 +10,7 @@ import { castProject, castShotRack,
          onCastChange, emitRackChange, BZ_BAG_VERSION } from "./bz_rack.js";
 import { bzStore } from "./bz_store.js";
 import { saveRack } from "./bz_project_sync.js";
-import { pullSeg, normRack, isRealCid } from "./bz_seg.js";
+import { pullSeg, normRack, isRealCid, invalidateSeg } from "./bz_seg.js";
 import { projectStore } from "./bz_project_store.js";
 import { MAX_SLOTS } from "./csglide_rack_core.js";
 
@@ -28,7 +28,7 @@ export function installSeg(ui) {
   /* ---- 段槽位落 SQLite 工程库（20261012 方案 A）----
      媒体架是 rack 的唯一权威写入方：摆图 / 删槽 / 裁剪 / 切段收口后，防抖
      700ms 把该段快照 POST /cglide/store/rack。片名从导演台工程快照取。
-     hydrate 灌库后 2s 内的 commit 不回写（防止"刚从库读出又写回"的回声）。 */
+     hydrate 同步执行期间不回写。 */
   /* 只有**真实段**的架况才配落库。Ctrl+Z（ComfyUI 画布撤销）会把 rack_data
      widget 整体回滚到旧版本，里面混着早已删掉段的 uid 键；这些键一旦落库，
      "删掉的素材又冒出来"就从中央层面坐实了。拿不到段名单时一律放行 ——
@@ -46,12 +46,12 @@ export function installSeg(ui) {
   }
 
   const rackSaveTimers = {};
-  let hydrateQuietUntil = 0;
+  let hydrating = false;
   /* 返回值 = 这一次有没有真的排上落库。四道闸门任一拦下都是 false，调用方
      （参照图替换的跨段还原）靠它区分"已落库"与"静默没落"——否则用户看到
      「已还原」，刷新后中央库又把旧架面灌回来。原有调用方一律忽略返回值。 */
   function scheduleRackSave(cid) {
-    if (!cid || Date.now() < hydrateQuietUntil) return false;
+    if (!cid || hydrating) return false;
     const p = castProject(ui.node);
     const name = (p && p.name) || "";
     if (!name) return false;
@@ -70,7 +70,10 @@ export function installSeg(ui) {
          清空 / 删光素材之后库里仍留着旧记录，刷新时 hydrateRacks 按库把素材
          整批灌回来 —— 表现就是「点了清空，刷新后素材又长回来」。
          灌库侧只认有素材的段（rackHasFile），空记录灌不进来，写空是安全的。 */
-      return saveRack(name, cid, snap);
+      return saveRack(name, cid, snap).then((result) => {
+        if (result) invalidateSeg(name, cid);
+        return result;
+      });
     }, 700);
     return true;
   }
@@ -279,10 +282,14 @@ export function installSeg(ui) {
       return;
     }
     const mySeq = ++_reconSeq;
-    pullSeg(nm, key).then((central) => {
+    const before = JSON.stringify(snapshot());
+    if (projectStore.hasPendingWrite(nm, "rack:" + key)) return;
+    pullSeg(nm, key, { force: true }).then((central) => {
       if (!central) { console.warn("[B1] 素材对账：中央没返回", key); return; }
       if (_reconSeq !== mySeq) return;   // 期间又切段了，丢弃
       if (String(ui.st.cur) !== String(key)) return; // 已经不在这一段了
+      if (JSON.stringify(snapshot()) !== before) return; // 对账期间用户已修改架面
+      if (projectStore.hasPendingWrite(nm, "rack:" + key)) return;
       /* 渲染期闸门（20261024 · 中央集权）：批量渲染时渲染循环是唯一权威，
          它按段身份自取段记忆；此刻异步中央对账若用（可能是旧的）中央数据
          覆盖本地段记忆，compile 可能取到被覆盖的旧数据。渲染中跳过覆盖，
@@ -298,7 +305,8 @@ export function installSeg(ui) {
       console.log("[B1] 素材对账:", key,
                   "中央=" + (rackHasFile(cr) ? firstImg(cr) : "无素材"),
                   "本地=" + firstImg(ui.st.segs[key]));
-      if (!rackHasFile(cr)) return;                  // 中央也没素材，别拿空覆盖
+      if (!central.rack || !central.rack.slots || central.rack_present === false) return;
+      if (central.rack_present == null && !rackHasFile(cr)) return; // 旧后端无法区分缺失和空
       const mem = ui.st.segs[key];
       if (mem && rackHasFile(mem) && sameSlots(mem, cr)) return;   // 一致，不动
       console.log("[B1] 素材以中央为准:", key,
@@ -405,15 +413,16 @@ export function installSeg(ui) {
 
   /**
    * 工程库启动灌库（hydrate）：把库里各段架况整批灌进 segs，再让架面停在
-   * 当前段。灌库期间抑制落盘回声 2s。只灌真有素材的段，空段不覆盖记忆。
+   * 当前段。灌库同步期间抑制落盘回声，空素材也按记录恢复。
    * 返回灌入的段数。旧 bag 没有本函数，由 bz_project_sync 走整包 load 兜底。
    */
   function hydrateRacks(racks, curCid) {
-    hydrateQuietUntil = Date.now() + 2000;
+    hydrating = true;
+    try {
     let n = 0;
     Object.keys(racks || {}).forEach((cid) => {
       const rk = racks[cid];
-      if (rk && rk.slots && rackHasFile(rk)) {
+      if (rk && rk.slots) {
         ui.st.segs[String(cid)] = {
           slots: JSON.parse(JSON.stringify(rk.slots || { images: [], videos: [], audios: [] })),
           fps: rk.fps || 0, audio_out: rk.audio_out || 0,
@@ -451,6 +460,7 @@ export function installSeg(ui) {
     } catch (_) {}
     console.log("[状态库] 媒体架 hydrateRacks 灌入 " + n + " 段，当前段=" + (curCid || "空"));
     return n;
+    } finally { hydrating = false; }
   }
 
   /** 真实分段数（导演台的分段列表为准）。拿不到返回 0。 */

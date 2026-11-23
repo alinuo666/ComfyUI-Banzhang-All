@@ -11,7 +11,7 @@ import torch
 from . import banzhang_ripple_core as rc
 from . import banzhang_ripple_video as vd
 
-# 「涟漪数据」不再是独立输出口：整包挂进官方 VIDEO 的内部属性，随 🎬 窗口视频口传给
+# 「涟漪数据」不再是独立输出口：整包挂进官方 VIDEO 的内部属性，随 🎬 视频口传给
 # 应用编辑 / 输出成片。属性名全包唯一，避免与核心 VIDEO 自带字段撞名。
 RIPPLE_ATTR = "_banzhang_ripple"
 CATEGORY = "👨‍🏫班长/MiniMax H3"
@@ -34,10 +34,10 @@ def make_ripple_video(content, fps, audio, ripple: dict):
 
 
 def unwrap_ripple(ripple):
-    """从 🎬 窗口视频口取回涟漪数据字典；误接普通 VIDEO 时给出中文提示。"""
+    """从 🎬 视频口取回涟漪数据字典；误接普通 VIDEO 时给出中文提示。"""
     data = getattr(ripple, RIPPLE_ATTR, None)
     if not isinstance(data, dict) or "window" not in data or "geometry" not in data:
-        raise ValueError("「🎬 窗口视频」必须接「H3 涟漪 · 选片段」的视频输出口；普通 VIDEO 里没有涟漪数据。")
+        raise ValueError("「🎬 视频」口必须接「H3 涟漪 · 时间轴选段」的视频输出口；普通 VIDEO 里没有涟漪数据。")
     return data
 
 

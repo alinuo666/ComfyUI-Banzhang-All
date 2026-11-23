@@ -89,6 +89,7 @@ export function installRun(ui) {
       mode: r.mode, scope: r.scope, queue: r.queue, startIdx: r.startIdx,
       k: r.k, i: r.i, total: r.total, skipped: r.skipped,
       pid: r.pid || null, note: r.note || "", cancel: r.cancel ? 1 : 0,
+      stageSignature: r.stageSignature || "",
       made: r.made || [], partials: r.partials || [], warnings: r.warnings || [],
       failed: r.failed || [],
     };
@@ -142,6 +143,18 @@ export function installRun(ui) {
     } catch (_) { /* 查不到 */ }
     return "";
   }
+  async function cancelPrompt(id) {
+    if (!id) return;
+    try {
+      const res = await api.fetchApi("/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+      if (res.ok) { ui.stageFlowForget?.(id); return; }
+    } catch (_) { /* 旧版或连接失败：只尝试按 id 删除排队项 */ }
+    try {
+      await api.fetchApi("/queue", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete: [id] }) });
+    } catch (e) { console.warn("[H3 Studio] 删除本轮排队任务失败：", e); }
+    ui.lanesFlash?.("当前后端不支持按任务中断；已停止后续分段，正在执行的任务可能继续到结束");
+  }
   /* run / runBox 已上移到 buildUI 靠前的位置（见渲染控制行旁）：paintSegTools()
      在 3733 行就会被 render() 调到，而它经 paintRenderRow() 读 ui.run —— 声明留在
      这一行会撞 TDZ（Cannot access 'run' before initialization），整个面板在
@@ -188,6 +201,7 @@ export function installRun(ui) {
     console.log("[编译] " + lineOf(rec));
     /* 重复段 / 引用缺口在这里就能判定 —— 不用等成片出来才发现两段一样。 */
     noteCompile(rec, ui);
+    projectStore.markBatchPrompt(built.prompt);
     const res = await api.queuePrompt(0, built.prompt);
     const id = res && (res.prompt_id || res.promptId);
     if (!id) throw new Error("服务端未返回任务 ID");
@@ -316,12 +330,7 @@ export function installRun(ui) {
         if (ui.run.driver) syncRun(); else markCancel();
         /* 立即中断当前正在后端执行的 prompt：光设 cancel 只让前端不再等，
            当前任务在后端仍会跑完，用户会看到"点了停止它还在跑"。 */
-        try { await api.interrupt(); } catch { /* 已结束/无任务，忽略 */ }
-        /* 清空队列里残留的 pending（兜底：防并发或其他来源已排队的任务）。 */
-        try {
-          await api.fetchApi("/queue", { method: "DELETE",
-            body: JSON.stringify({ delete: [], clear: true }) });
-        } catch { /* 旧版无该路由，忽略 */ }
+        await cancelPrompt(ui.run.pid);
         paintRun();
       };
       card.append(cancel);
@@ -421,7 +430,18 @@ export function installRun(ui) {
   }
 
   async function renderAll(mode, scope) {
-    if (ui.run) return;
+    if (ui.run || ui._bzRunPreparing || ui.node.bzStageBusy?.()) return;
+    if (app.processingQueue) { ui.lanesFlash("画布正在准备上一项提交，请稍后再运行"); return; }
+    ui._bzRunPreparing = true;
+    try {
+      ui.paintRenderRow?.();
+      ui.stageFlowUpdateControls?.();
+      return await startRenderAll(mode, scope);
+    }
+    finally { ui._bzRunPreparing = false; ui.paintRenderRow?.(); ui.stageFlowUpdateControls?.(); }
+  }
+
+  async function startRenderAll(mode, scope) {
     /* 折叠态下 .bzf-view 是 display:none，逐帧预览看不见；全部渲染时强制展开。 */
     try { ui.monitor.setMode?.("normal"); } catch { /* 监视器尚未就绪 */ }
     const p = ui.proj();
@@ -434,18 +454,6 @@ export function installRun(ui) {
         + "有段没登记进工程，已经停下、没有排队。先刷新一次页面（对账会把缺的段补回工程），"
         + "再点全部渲染。");
       return;
-    }
-    /* v2 阶段 ⑤：后端权威渲染状态。开关 window.__bzBackendRun 打开时建立
-       后端 run_id；后端不可用返回 null，下面照旧走浏览器循环，绝不拦出片。 */
-    if (backendRun.enabled() && p && Array.isArray(p.shots)) {
-      try {
-        const clips = p.shots.map((s) => s && s.clip).filter(Boolean);
-        const started = await backendRun.start(String(p.name || ""), clips);
-        if (started && started.run_id) {
-          ui._bzRunId = started.run_id;
-          console.log("[班长] 后端批跑状态已建立：" + started.run_id);
-        }
-      } catch (_) { /* 后端不可用时保持原浏览器循环 */ }
     }
     if (!p.shots.length) {
       ui.lanesFlash("本工程还没有任何分段 —— 先在成片监视器里点「＋ 接第一段」");
@@ -485,9 +493,7 @@ export function installRun(ui) {
        必须落盘：不清存档的话，刷新页面会看到上一轮的旧结果——而本轮明明
        已经开跑了。渲染**开始前**调 commit 是安全的（此刻还没进 rendering
        态，beginEdit 不会打断任何东西）。 */
-    if (ui.st) ui.st.run_result = null;
-    ui.paintFootRow?.();
-    try { ui.commit?.(); } catch (_) { /* 面板未就绪 */ }
+    ui.clearRunResult?.();
     /* 入队前确认画布上接了「🎬 H3 VAE 快速解码」。
        20261111 阶段 1：💾 续拍存档已并入这个节点，画布不再放存档节点。
        它每次执行前自动写 (段, take, 阶段) 的 cont 档；一采/二采各接一个，
@@ -509,7 +515,6 @@ export function installRun(ui) {
     ui.stash();
     /* 渲染期权威令牌：渲染循环成为唯一权威，self-heal 立即冻结"后端→前端"
        自动灌入，杜绝渲染期间用后端旧值覆盖画布（尺寸不生效根因）。 */
-    projectStore.beginRender(ui.node);
     const startIdx = p.idx >= 0 ? p.idx : 0;
     /* 中断原因由 driveRun 持有（catch 里拿到 err，finally 里要用——跨这两个块
        必须有个外层变量，否则 finally 就分不清"跑完了"和"抛异常退出的"）。 */
@@ -521,6 +526,13 @@ export function installRun(ui) {
     if (!queue.length) {
       ui.lanesFlash("该范围内的分段全部被跳过 —— 没有可渲染的段落");
       return;
+    }
+    if (backendRun.enabled()) {
+      try {
+        const clips = queue.map((i) => p.shots[i]?.clip).filter(Boolean);
+        const started = await backendRun.start(String(p.name || ""), clips);
+        if (started && started.run_id) ui._bzRunId = started.run_id;
+      } catch (_) { /* 后端不可用时保持原浏览器循环 */ }
     }
     const skipped = range.length - queue.length;
 
@@ -558,16 +570,22 @@ export function installRun(ui) {
       }
     }
 
+    ui.stageFlowRepaint?.();
+    const stageSignature = ui.stageFlowSignature?.() || "";
+    projectStore.beginRender(ui.node);
+    ui._bzRunPreparing = false;
     ui.run = { driver: true, ctx: RUN_CTX, sig: projSig(), startedAt: Date.now(),
             cancel: false, queue, mode, scope, startIdx, skipped,
+            stageSignature,
             i: queue[0], k: 0, total: queue.length,
             pid: null, note: "", made: [], partials: [], failed: [] };
-    paintRun();
-    /* 立刻重画分段列表：把建段/删段/换工程这类按钮在运行期间置灰 */
-    /* 心跳独立起一条：等一段要几十秒，这段时间"司机还活着"全靠它 —— 只靠
-       paintRun 打点的话，别的页面会误判司机已死、抢着续跑。 */
-    beatTimer(true);
-    await driveRun({ pid: null, k: 0 });
+    try {
+      paintRun();
+      beatTimer(true);
+      await driveRun({ pid: null, k: 0 });
+    } finally {
+      if (ui.run) { ui.run = null; beatTimer(false); projectStore.endRender(ui.node); paintRun(); }
+    }
   }
 
   /* 收片登记：把这一段跑出来的成片名记进本轮 —— 结果行与"已完成几段"都读它。 */
@@ -586,7 +604,7 @@ export function installRun(ui) {
      刷新时跑出来的一模一样，两份实现迟早会长歪。
      previous = 上一段的中央回执（本段的承接来源；首段为 null）。返回本段回执，
      抛错即整轮中断。 */
-  async function runSegment(previous, mode, i, k) {
+  async function runSegment(previous, mode, i, k, previousFailed = false) {
     const p = ui.proj();
     ui.run.i = i; ui.run.k = k; ui.run.note = ""; ui.run.pid = null;
     paintRun();
@@ -617,6 +635,7 @@ export function installRun(ui) {
       && !(i > 0 && (p.shots[i].link === false || _unlinked));
 
     if (linked && i > 0 && mode === "continue") {
+      if (previousFailed) throw new Error("前一段本轮失败，不能使用更早的段或旧档接续");
       /* previous 为空只在「重拍单段」时出现（前序段没在本轮跑过）：
          先回中央档案补它的续拍存档，补不到再报错。 */
       if (!previous) previous = await prevReceiptFromArchive(p, i);
@@ -682,10 +701,15 @@ export function installRun(ui) {
     }
 
     ui.run.note = "已入队，等待渲染\u2026"; paintRun();
+    ui.stageFlowRepaint?.();
+    if (ui.run.stageSignature && ui.stageFlowSignature?.() !== ui.run.stageSignature) {
+      throw new Error("阶段拓扑或阶段开关已变化，请重新开始本轮运行");
+    }
     const id = await queueOnce(p.shots[i] && p.shots[i].clip);
     /* 入队即落盘：此刻刷新，能原样把这一段接回来（等它跑完再收片），而不是
        丢掉它、让前面跑过的段白等 —— 「刷新后弹窗没了」的根因就在这里。 */
     ui.run.pid = id; paintRun();
+    if (ui.run.cancel) { await cancelPrompt(id); throw new Error("cancelled"); }
     await waitForPrompt(id);
     /* 中央收片：后端按 prompt_id 与本次拓扑，只认续拍存档下游的分段视频。
        导演台整片口下游的超分/插帧/合并结果不会进入分段时间轴。 */
@@ -747,7 +771,10 @@ export function installRun(ui) {
            手动停止（cancelled）仍然当场中止：那是用户的意图，不是失败。 */
         for (let k = k0; k < ui.run.queue.length; k++) {
           try {
-            previous = await runSegment(previous, ui.run.mode, ui.run.queue[k], k);
+            const i = ui.run.queue[k];
+            const prevFailed = ui.run.failed.some((f) => ui.run.queue[f.k] === i - 1);
+            const predecessor = k > 0 && ui.run.queue[k - 1] === i - 1 ? previous : null;
+            previous = await runSegment(predecessor, ui.run.mode, i, k, prevFailed);
             if (ui._bzRunId) {
               const shot = ui.proj().shots[ui.run.queue[k]];
               await backendRun.done(ui._bzRunId, shot && shot.clip, true,
@@ -756,6 +783,9 @@ export function installRun(ui) {
           } catch (err) {
             if (String(err && err.message) === "cancelled") {
               stopped = true; failMsg = "已手动停止"; break;
+            }
+            if (String(err && err.message).startsWith("阶段拓扑或阶段开关已变化")) {
+              stopped = true; failMsg = String(err.message); break;
             }
             const why = String((err && err.message) || err);
             ui.run.failed.push({ k, why });
@@ -794,6 +824,7 @@ export function installRun(ui) {
          L434 switchTo 会把面板归位）。 */
       projectStore.endRender(ui.node);
       paintRun();              /* 浮层撤掉 + 存档清掉（paintRun 的收尾分支） */
+      ui.stageFlowUpdateControls?.();
       /* 结果行：成败、完成了几段、断在哪一段、为什么。跑完一轮之后这是面板上
          唯一能回答"刚才到底怎么样了"的地方，所以常驻到下一次渲染开始。 */
       /* 素材缺口挂在结果行尾巴上：不中断，但跑完必须看得见 —— 否则用户会以为
@@ -808,7 +839,7 @@ export function installRun(ui) {
         ui.setRunResult(false,
           `完成 ${made.length} 段 · ${failed.length} 段失败（第 `
           + failed.map((f) => f.k + 1).join("、") + ` 段：${failed[0].why}）`
-          + ` ｜ ⚠ 失败段没有成片；它后面的段是按上一段成功的承接档续的，画面可能不连`
+          + ` ｜ 请按各段失败原因修正后重试`
           + warnTail);
       } else if (partials.length) {
         ui.setRunResult(false, `完成 ${made.length} 段 · ${partials.length} 段为 partial`
@@ -867,6 +898,7 @@ export function installRun(ui) {
       startedAt: rec.startedAt || 0,
       queue, mode: rec.mode, scope: rec.scope, startIdx: rec.startIdx,
       cancel: false, i: rec.i, k: rec.k, total: rec.total || queue.length,
+      stageSignature: rec.stageSignature || "",
       skipped: rec.skipped || 0, pid: rec.pid || null,
       note: driver ? "刷新后已接回渲染进度…" : (rec.note || ""),
       made: (rec.made || []).slice(),

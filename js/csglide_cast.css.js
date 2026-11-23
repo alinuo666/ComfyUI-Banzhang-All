@@ -1481,6 +1481,7 @@ svg.topo { display:block; min-width:100%; }
 .topo .sw-knob.on { fill:var(--h3-accent); }
 .topo .stat-dot { fill:var(--h3-label); }
 .topo .stat-dot.cached { fill:var(--gc-wave); }
+.topo .stat-dot.shared { fill:var(--gc-wave); }
 .topo .stat-dot.running { fill:var(--h3-accent); }
 
 /* 主运行按钮：文案随拓扑开关动态变化，范围一眼可见 */

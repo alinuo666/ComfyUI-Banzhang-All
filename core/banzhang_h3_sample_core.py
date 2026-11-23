@@ -248,7 +248,9 @@ def build_image_ref_conditioning(clip, vae, images, prompt, use_max, w_px, h_px,
                           "timestamps": [i / 2.0 for i in range(len(sample_idx))]})
         z = vae.encode(frames)
         ref_blocks.append({"kind": "video", "latent_t": int(z.shape[2]),
-                           "latent_h": ch // 16, "latent_w": cw // 16, "latent": z})
+                           "latent_h": ch // 16, "latent_w": cw // 16,
+                           "ref_audio_t": 0,   # 参考视频只取画面轨：新版官方布局按这个键给参考音频占时
+                           "latent": z})
     tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
     cond = clip.encode_from_tokens_scheduled(tokens)
     if ref_blocks:

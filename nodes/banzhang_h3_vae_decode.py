@@ -302,10 +302,15 @@ class H3帧流:
             del piece, arr
         self._已解 = True
         self._video = None
+        self._vae = None
         字节 = sum(a.nbytes for a in self._u8)
         print(f"[H3 VAE 快速解码] 帧包已备好：{self.帧数} 帧 {self.宽}x{self.高}，"
               f"{字节 / 1024 ** 3:.2f} GB uint8（整段 float32 的 1/4）")
         return self
+
+    def _comfy_cache_tensors(self):
+        """让 ComfyUI 的内存压力缓存按实际字节统计帧包。视图与编码器共用原数组。"""
+        return [torch.from_numpy(arr) for arr in self._u8 or ()]
 
     def 批次(self, batch):
         """按批产出 uint8 [n,高,宽,3]，给 ffmpeg 直接写管道。可反复遍历。"""
@@ -376,9 +381,8 @@ class BanZhangH3VAEDecodeFast:
                     {
                         "default": "关",
                         "tooltip": (
-                            "打开后「图像」出口直接输出 uint8 帧包(低显存流式), "
-                            "原来接视频合并「🖼️ 图像」口的线不用动, 自动走「解一块写一块丢一块」, "
-                            "内存峰值只剩单块。"
+                            "打开后自动按时间分块解码，整段以 uint8 帧包保存在内存中，"
+                            "帧数据占 float32 的四分之一。直接连班长视频合并的「🖼️ 图像」口即可分批编码。"
                         ),
                     },
                 ),
@@ -397,8 +401,8 @@ class BanZhangH3VAEDecodeFast:
         "H3 音视频联合潜空间直连解码: VAE 由输入端口传入(接官方 VAE 加载器), "
         "自动剥离音频流只解视频。空间分块与时间分块尺寸均固定为实测最优值、不开放调节"
         "(空间 256/64 是唯一能压住 16 像素 patch 栅格的档位; 时间 85 帧/块 + 39 帧上下文)。"
-        "「帧流模式」打开后「图像」出口直接输出 uint8 帧包, 接视频合并即可流式写盘、"
-        "内存峰值只剩单块。解码前自动按需腾显存, 避免小显存卡上模型与 VAE 共驻导致的解码变慢。"
+        "「帧流模式」打开后按时间分块解码，整段保留为 uint8 帧包，视频合并可分批写盘。"
+        "解码前自动按需腾显存, 避免小显存卡上模型与 VAE 共驻导致的解码变慢。"
         "解码前还会自动把本阶段音视频联合潜空间归档到工程文件集（一采/二采各一份），"
         "无需任何设置，画布上不必再接「💾 续拍存档」节点。"
     )
@@ -459,7 +463,7 @@ class BanZhangH3VAEDecodeFast:
         # 关 → 正常输出 float32 IMAGE。
         if 帧流模式:
             print("[H3 VAE 快速解码] 帧流模式开启 → 「图像」口直接输出 uint8 帧包"
-                  "(原线接视频合并即可, 内存峰值只剩单块)")
+                  "(按时间分块解码，原线接视频合并即可分批写盘)")
             return (H3帧流(vae, dtype, video, out_dev, True).解(),)
 
         if 时间分块:

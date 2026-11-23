@@ -241,8 +241,9 @@ export function installConflict(ui) {
       再按复制过来的档案重建工程对象。于是时间轴上是原片的全部段，
       点开能播、能续、能重抽，旧工程一个字节都没动。
       源片没有档案（别的机器 / 已删）时退回老行为：只登记第 1 段，轴不空着。 */
-  async function restoreVideoAsNewProject(fileName) {
+  async function restoreVideoAsNewProject(fileName, snapshot) {
     const p = ui.proj();
+    ui.node._bzVideoSnap = true;
     const oldName = (p && p.name) || "未命名工程";
     /* 唯一名必须由后端给：本地撞名会把新片写进旧片档案。
        要不到名 → **不还原、不写任何档案**（与「新建工程」同一口径，不再本地编名）。 */
@@ -269,7 +270,7 @@ export function installConflict(ui) {
       const res = await api.fetchApi("/cglide/chain/copy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from: oldName, to: name }),
+        body: JSON.stringify({ from: oldName, to: name, snapshot }),
       });
       copyHttp = res.status;
       copied = await res.json().catch(() => ({}));
@@ -305,6 +306,12 @@ export function installConflict(ui) {
       let adopted = false;
       try { adopted = (await ui.adoptCopiedProject?.(name)) === true; } catch (_) {}
       if (adopted) {
+        if (snapshot) {
+          ui.lanesFlash(copied.source_archive === false
+            ? `已从视频还原本次分段到「${name}」，本机没有原片档案。`
+            : `已复制档案到「${name}」，当前段已恢复为视频生成时的参数与文案。`);
+          return;
+        }
         ui.lanesFlash(`已把原片「${oldName}」的整份档案复制到「${name}」`
           + `（${copied.sizeMB != null ? copied.sizeMB + " MB · " : ""}全部段 / 参数 / 文案台 / 媒体架 / 成片），`
           + `旧工程未改动`);

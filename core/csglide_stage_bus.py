@@ -52,11 +52,18 @@ def downstream_latent_stage(stage_flow):
 
 
 def downstream_film_stage(stage_flow):
-    """口14：存在启用 video 阶段时，给最后启用 latent 阶段的成片。"""
+    """口14：优先取启用的视频阶段之前最后启用的 latent；全关闭时取最近档。"""
     flow = normalized(stage_flow)
     if not any(i["kind"] == "video" and i["enabled"] for i in flow):
         return None
-    enabled_on = [x for x in _latents(flow) if x["enabled"]]
-    if not enabled_on:
+    before_video = []
+    for item in flow:
+        if item["kind"] == "video" and item["enabled"]:
+            break
+        if item["kind"] == "latent":
+            before_video.append(item)
+    if not before_video:
         return None
-    return "s%d" % enabled_on[-1]["ordinal"]
+    enabled_on = [x for x in _latents(before_video) if x["enabled"]]
+    available = enabled_on or _latents(before_video)
+    return "s%d" % available[-1]["ordinal"]

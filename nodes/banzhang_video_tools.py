@@ -1159,6 +1159,13 @@ def _safe_name(s):
     return t.strip().rstrip(". ")[:40].rstrip(". ")
 
 
+def _video_prompt_json(prompt):
+    # 执行器在节点字典上追加 is_changed=[NaN]。它只用于缓存判定，
+    # 写进媒体会使标准 JSON 读取器丢掉整份 prompt。
+    return json.dumps({nid: {k: v for k, v in entry.items() if k != "is_changed"}
+                       if isinstance(entry, dict) else entry for nid, entry in prompt.items()})
+
+
 def _strip_view_ds(workflow_data):
     """删除工作流里保存的画布视角(extra.ds)。
 
@@ -1213,6 +1220,8 @@ def _declare_film_identity(prompt, node_id):
 
     # ---- 身份：片名 + 段 id ----
     name = cid = ""
+    stage_flow = None
+    whole_delivery = False
     for spec in graph.values():
         if not isinstance(spec, dict) or spec.get("class_type") != "CSGlideCastCS":
             continue
@@ -1220,7 +1229,10 @@ def _declare_film_identity(prompt, node_id):
         if not isinstance(raw, str) or not raw.strip():
             continue
         try:
-            ch = json.loads(raw).get("chain") or {}
+            h3 = json.loads(raw)
+            ch = h3.get("chain") or {}
+            stage_flow = h3.get("stage_flow")
+            whole_delivery = h3.get("push_film_latent") is True
         except Exception:
             continue
         name = str(ch.get("name") or "").strip()
@@ -1299,7 +1311,24 @@ def _declare_film_identity(prompt, node_id):
     elif role != "segment":
         stage_why = "不是分段片，不判阶段"
 
-    if not name or not cid:
+    # 组模式下多个视频分支共用 s3：只把用户选中（或最后启用）的分支
+    # 声明为分段片，其余分支仍照常输出，但不与它争抢同一档位。
+    if isinstance(stage_flow, dict):
+        for group in stage_flow.get("stages") or []:
+            if (isinstance(group, dict) and group.get("kind") == "video"
+                    and group.get("enabled") and "archive" in group
+                    and str(node_id) in {str(n) for n in (group.get("members") or [])}):
+                if group.get("archive"):
+                    role, why = "segment", "阶段拓扑选中的视频分支"
+                    stage, stage_why = "s3", "视频阶段共用三采档"
+                else:
+                    role, why = "none", "视频分支未选为三采档收片来源"
+                    stage, stage_why = "", "视频分支共用三采档"
+                break
+    if whole_delivery:
+        role, why = "whole", "整片潜空间加工结果，不归入单段时间轴"
+        stage, stage_why = "", "整片不占用单段阶段档"
+    if not name or (not cid and not whole_delivery):
         role, why = "none", "导演台 h3_data 里没有片名或段 id"
         stage = ""
     # bz_arch / bz_arch_on 是旧声明式收片的字段：存档节点已删除，留空只为让
@@ -1426,7 +1455,7 @@ class banzhangVideoCombine:
             adopt_meta = {}
             if save_metadata:
                 if prompt_data is not None:
-                    adopt_meta["prompt"] = json.dumps(prompt_data)
+                    adopt_meta["prompt"] = _video_prompt_json(prompt_data)
                 if isinstance(extra_pnginfo_data, dict) and extra_pnginfo_data.get("workflow"):
                     _strip_view_ds(extra_pnginfo_data["workflow"])
                     adopt_meta["workflow"] = json.dumps(extra_pnginfo_data["workflow"])
@@ -1662,13 +1691,10 @@ class banzhangVideoCombine:
         return key, 次数
 
     def _回收已消费帧(self, prompt, node_id, images):
-        """出片成功后，把刚消费完的那份整段帧从执行器缓存里摘掉。
+        """大帧出片后若内存吃紧，按执行器的水位先回收旧缓存。
 
-        为什么这条路走得通：内核把释放能力通过 extra_ram_release 暴露给节点
-        （execution.py:806 自己跑完一个节点就调它），是官方通道，不是后门。
-        闸门必须严：free_active=True 是按「评分」挑条目（往轮的先走、同轮最大的
-        先走），不是按身份挑 —— 所以只在确认这份张量除了本节点没人用时才发起，
-        且只申请刚好覆盖它的量，避免波及别人还要用的中间结果。
+        此时执行器仍持有本节点的输入。当前轮的帧交给执行器在节点返回后处理；
+        在这里按帧大小强驱逐，会在输入尚未释放时连带清掉其他分支的缓存。
         """
         if images is None or not hasattr(images, "numel"):
             return
@@ -1679,15 +1705,16 @@ class banzhangVideoCombine:
         if 次数 != 1:
             return
         try:
-            import comfy.model_management as mm
+            from comfy.memory_management import extra_ram_release, RAM_CACHE_HEADROOM
             from comfy.system_memory import virtual_memory_available
-            if not hasattr(mm, "extra_ram_release"):
+        except ImportError:
+            return  # 老内核没有 RAM 压力缓存接口
+        try:
+            if virtual_memory_available() >= RAM_CACHE_HEADROOM:
                 return
-            before = virtual_memory_available()
-            freed = mm.extra_ram_release(before + size, free_active=True)
-            after = virtual_memory_available()
-            print(f"♻️ [视频合并] 这一段的帧已消费完，回收 {freed/1024**3:.2f} GB"
-                  f"（可用内存 {before/1024**3:.1f} → {after/1024**3:.1f} GB）")
+            freed = extra_ram_release(RAM_CACHE_HEADROOM)
+            if freed:
+                print(f"♻️ [视频合并] 已移除旧缓存，估算 {freed/1024**3:.2f} GB")
         except Exception as e:
             print(f"[视频合并] 回收中间结果失败（不影响出片）: {e}")
 
@@ -1720,11 +1747,11 @@ class banzhangVideoCombine:
             return {"ui": {}, "result": (None, None, None)}
         try:
             ret = self._combine_impl(**kwargs)
-            # 先在 composer 之外把这段的整段帧还给执行器缓存：后面的净化只管显存，
-            # 内存侧这一刀只有这里能落。
+            # 先缩小未接线的图像输出，避免整段帧经结果再次进入缓存。
+            ret = self._按需透传(ret, kwargs)
             self._回收已消费帧(kwargs.get("prompt"), kwargs.get("unique_id"),
                                kwargs.get("🖼️ 图像"))
-            return self._按需透传(ret, kwargs)
+            return ret
         finally:
             if kwargs.get("🧹 出片后自动净化", True):
                 self._出片后净化()
@@ -1817,7 +1844,7 @@ class banzhangVideoCombine:
         帧数 = int(images.shape[0])
         释放GB = images.numel() * images.element_size() / 1024 ** 3
         ret["result"] = (images[:1].clone(),) + tuple(result[1:])
-        print(f"🧠 [视频合并] 图像透传无人接 → 只留首帧，释放内存 {释放GB:.2f} GB（{帧数 - 1} 帧）")
+        print(f"🧠 [视频合并] 图像透传无人接 → 只留首帧（输入 {帧数} 帧，{释放GB:.2f} GB）")
         return ret
 
     def _出片后净化(self):
@@ -1890,7 +1917,7 @@ class banzhangVideoCombine:
         # 拿到的对象若带「批次」方法(torch.Tensor 没有), 自动转成帧流走流式写盘,
         # 用户原来接「🖼️ 图像」的线一根都不用动。
         if 帧流 is None and images is not None and hasattr(images, "批次"):
-            print("[视频合并] 「🖼️ 图像」口收到帧包对象 → 自动走流式写盘(解一块写一块)")
+            print("[视频合并] 「🖼️ 图像」口收到 uint8 帧包 → 分批编码写盘")
             帧流 = images
             images = None
 
@@ -2169,7 +2196,7 @@ class banzhangVideoCombine:
         if not ctx["save_metadata"]:
             return
         if ctx["prompt"] is not None:
-            ctx["embed_meta"]["prompt"] = json.dumps(ctx["prompt"])
+            ctx["embed_meta"]["prompt"] = _video_prompt_json(ctx["prompt"])
         if isinstance(ctx["extra_pnginfo"], dict) and ctx["extra_pnginfo"].get("workflow"):
             _strip_view_ds(ctx["extra_pnginfo"]["workflow"])
             ctx["embed_meta"]["workflow"] = json.dumps(ctx["extra_pnginfo"]["workflow"])

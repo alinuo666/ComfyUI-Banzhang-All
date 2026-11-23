@@ -208,25 +208,55 @@ const VideoSyncController = {
 
     // 视频缓冲可能已被空闲释放（不开同步时的常态）：装回片源再操作。
     // 返回 false = 本轮还用不了（元数据未到），调用方跳过，绝不许当成功。
+    //
+    // 「还不能用」有两种成因，过去当成一种处理，就是这次栈溢出的根：
+    //   _bzReleased 有值 —— 缓冲被空闲释放过，src 已从元素上摘掉，必须走
+    //     bzEnsureVideoSrc 装回（装回后才有元数据）；
+    //   _bzReleased 为空 —— src 一直挂在元素上，只是元数据还没到（换上新片、
+    //     刚写 src 的第一拍）。这时**绝不能**调 bzEnsureVideoSrc：它在没有释放
+    //     记录时是立即同步回调的（bzEnsureVideoSrc:87 `if (!r) { onReady(); }`），
+    //     回调里那句 this._seek(v, true) 又回到 _seek → _ensure → 同一轮同步回调，
+    //     而 readyState 一直是 0 —— 实测 RangeError: Maximum call stack size exceeded，
+    //     栈形如 _seek → _ensure → bzEnsureVideoSrc → onReady → _seek。
+    //     时间轴收到新片（src 换、readyState 0、没释放记录）正好撞上，表现为
+    //     画面停在旧帧不动、「时间轴没收最新视频」。
     _ensure(v) {
         const el = v.video;
         if (el.readyState >= 1) { this.refreshFrames(v); return true; }
-        // 装回进行中不重复发请求；3 秒还没到元数据（文件被删/路径失效）才允许重试
+        // 3 秒内不重复发同一个请求（文件被删 / 路径失效时不至于每帧重试）
         if (el._bzEnsuring && Date.now() - el._bzEnsuring < 3000) return false;
         el._bzEnsuring = Date.now();
-        bzEnsureVideoSrc(el, () => {
-            el._bzEnsuring = 0;
-            if (!this.enabled) return;          // 等元数据期间已退出同步
-            bzShowFrame(el, true);              // 此前顶的是海报，切回 video
-            this.refreshFrames(v);
-            this._seek(v, true);                // 补到当前同步帧，别停在释放时的位置
-            if (this._pendingPlay && this.videos.length
-                && this.videos.every(x => x.video.readyState >= 1)) {
-                this._pendingPlay = false;
-                this.play();                     // 齐了，续上用户点的那次播放
-            }
-        });
+        if (el._bzReleased) bzEnsureVideoSrc(el, () => this._ready(v));
+        else this._waitMetadata(el, () => this._ready(v));   // 只等，不碰 src
         return false;
+    },
+
+    // 元数据到手后的统一收尾：两条成因共用这一个出口，别再各自写一份。
+    // 走到这里 readyState 必然 >= 1，所以 _seek 里的 _ensure 会直接返回 true，
+    // 不会再绕回本轮 —— 递归在这里断掉。
+    _ready(v) {
+        const el = v.video;
+        el._bzEnsuring = 0;
+        if (!this.enabled) return;              // 等元数据期间已退出同步
+        bzShowFrame(el, true);                  // 此前顶的是海报，切回 video
+        this.refreshFrames(v);
+        this._seek(v, true);                    // 补到当前同步帧，别停在释放时的位置
+        if (this._pendingPlay && this.videos.length
+            && this.videos.every(x => x.video.readyState >= 1)) {
+            this._pendingPlay = false;
+            this.play();                        // 齐了，续上用户点的那次播放
+        }
+    },
+
+    // 只等元数据，不改 src。loadedmetadata 与 error 各挂一次：_bzWaitMd 挡住
+    // 重复挂载，error 分支必须清标志，否则文件读不出时这条 v 永久不再重试。
+    _waitMetadata(el, done) {
+        if (el._bzWaitMd) return;
+        el._bzWaitMd = true;
+        el.addEventListener("loadedmetadata", () => {
+            el._bzWaitMd = false; done();
+        }, { once: true });
+        el.addEventListener("error", () => { el._bzWaitMd = false; }, { once: true });
     },
 
     // 帧数回填：scan 时缓冲若已被释放，duration 是 NaN → frames 算成 0 →

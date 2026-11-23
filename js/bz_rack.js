@@ -177,9 +177,9 @@ export function deskNodes() {
 /** 找文案台节点：优先接在本台（导演台）上游的那台，否则取第一个。 */
 export function deskNodeOf(node) {
   const all = deskNodes();
-  const wired = all.filter((d) => feeds(d, node));
-  const list = wired.length ? wired : all;
-  return list[0] || null;
+  const source = promptNodeOf(node);
+  if (!source) return null;
+  return all.find((d) => d === source || feeds(d, source)) || null;
 }
 
 /**

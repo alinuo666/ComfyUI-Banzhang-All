@@ -86,12 +86,12 @@ export function installShots(ui) {
    * 编号），切换、打开、渲染时倒回，各段互不串台。只记引用不复制文件——
    * 要连文件一起走请用「打包」。没接媒体架时返回 null、字段不写：那是
    * 「当时没有媒体架」，不是「媒体架空着」。 */
-  /* 把媒体架段记忆里的某段整理成标准快照（无料/不存在返回 null）。 */
+  /* 空槽位也是有效快照，只有不存在时才返回 null。 */
   function segMemSnap(rn, key) {
     const mst = rn.gmr && rn.gmr.st;
     if (!key || !mst || !mst.segs) return null;
     const v = mst.segs[key];
-    if (!v || !rackHasFile(v)) return null;
+    if (!v || !v.slots) return null;
     return {
       slots: (v.slots && typeof v.slots === "object")
         ? JSON.parse(JSON.stringify(v.slots))
@@ -101,7 +101,7 @@ export function installShots(ui) {
     };
   }
 
-  /* 从 rack_data widget 序列化值构造「当前架面」快照（无料返回 null）。 */
+  /* 从 rack_data widget 序列化值构造「当前架面」快照。 */
   function widgetSnap(rn) {
     const raw = (rn.widgets && rn.widgets.find((x) => x.name === "rack_data")?.value) || "";
     if (!raw) return null;
@@ -119,22 +119,7 @@ export function installShots(ui) {
         fps: d.fps || 0,
         audio_out: d.audio_out || 0,
       };
-      /* 段级素材防丢（20261012「渲染后每段只剩片级首图」）：widget 序列化值
-         可能偏旧（热重载旧实例、load 签名去重等），媒体架**内存**里当前段
-         的槽位可能比 widget 全。只在媒体架当前认的段 == 导演台当前段时补齐
-         （防止把别的段素材错补进来），只补不删。 */
-      try {
-        const mst = rn.gmr && rn.gmr.st;
-        const curClip = (ui.st && ui.st.chain && ui.st.chain.clip) || "";
-        if (mst && curClip && String(mst.cur) === String(curClip)) {
-          const mem = (mst.segs && mst.segs[mst.cur]) || null;
-          mergeRackSlots(snap.slots, mem ? mem.slots : mst.slots);
-        }
-      } catch (e) { console.warn("[H3 Studio] rackSnapshot 内存补齐失败(忽略)：", e); }
-      /* 空架况（一个素材都没有）不存为快照 —— 空 object 一旦写进
-         shots[i].rack，restoreShotRack 就会把它当成"这一段就是空的"权威副本，
-         在用户刚摆图还没切段时把图盖掉。复制段走的是整份 shot 克隆，不经过这里。 */
-      if (!rackHasFile(snap)) return null;
+      if (!d.slots || typeof d.slots !== "object") return null;
       return snap;
     } catch (_) { return null; }
   }
@@ -143,6 +128,10 @@ export function installShots(ui) {
     const rn = rackNodeOf(ui.node);
     if (!rn) return null;
     const keyCid = cid ? String(cid) : "";
+    const live = rn.gmr && rn.gmr.st;
+    if (live && live.slots && (live.shared || !keyCid || !live.cur || String(live.cur) === keyCid)) {
+      return clone({ slots: live.slots, fps: live.fps || 0, audio_out: live.audio_out || 0 });
+    }
     /* 带段身份（stash 切段用）：onPick 后 set_current 广播会让媒体架**先于**
        导演台 switchTo 把架面切到新段 —— 此时再读"当前架面" widget，读到的是
        新段的图，却写进旧段的 shots[i].rack；下一次切回旧段，restoreShotRack
@@ -164,36 +153,11 @@ export function installShots(ui) {
          注意 cur 为空 = "还没停在任何段"，不是"停在别的段"，此时不存在串段
          风险，照常读架面。 */
       if (mst && mst.cur && String(mst.cur) !== keyCid) return segMemSnap(rn, keyCid);
-      /* 架面正好停在该段：widget 可能比段记忆新（刚摆图、切段尚未发生），读
-         widget，再用段记忆只补不删；widget 没值时段记忆也能救回来。 */
-      const segMem = segMemSnap(rn, keyCid);
-      const snap = widgetSnap(rn);
-      if (snap && segMem) mergeRackSlots(snap.slots, segMem.slots);
-      return snap || segMem;
+      /* 旧实例没有可用的内存架面时，使用序列化快照。 */
+      return widgetSnap(rn) || segMemSnap(rn, keyCid);
     }
     /* 无 cid（addShot / 复制 / 渲染等）：架面就停在目标段，读当前架面。 */
     return widgetSnap(rn);
-  }
-
-  /* 槽位补齐：dst（widget 序列化值）里**空着**、src（媒体架内存段记忆/当前
-     架面）同槽位**有 file** 时，把 src 的条目深拷贝补进 dst；dst 已有的条目
-     一律不动，src 多出的尾部条目追加。只补不删、按槽位对齐 —— widget 值
-     偏旧时抢救段级素材用，绝不反向覆盖。 */
-  function mergeRackSlots(dst, src) {
-    if (!dst || !src) return;
-    for (const kind of ["images", "videos", "audios"]) {
-      if (!Array.isArray(dst[kind])) dst[kind] = [];
-      const s = Array.isArray(src[kind]) ? src[kind] : [];
-      for (let i = 0; i < s.length; i++) {
-        const sv = s[i];
-        if (!sv || !sv.file) continue;
-        if (i < dst[kind].length) {
-          if (!dst[kind][i] || !dst[kind][i].file) dst[kind][i] = JSON.parse(JSON.stringify(sv));
-        } else {
-          dst[kind].push(JSON.parse(JSON.stringify(sv)));
-        }
-      }
-    }
   }
 
   /* 把分段存的快照倒回媒体架。没有快照就一动不动——老工程、建段时没接
@@ -225,7 +189,11 @@ export function installShots(ui) {
        切走 —— store 订阅（后端 current 变化 / 另一个标签页点的段）和
        setCurrent 广播都不受渲染循环支配。只判记忆不判 cur，架子停在别段时
        这一行直接 return，渲染就会拿着别段的素材提交。 */
-    if (onKey && memHasFile) return;
+    if (onKey && mem && mem.slots) return;
+    if (!onKey && mem && mem.slots && typeof rn.gmr.switchSeg === "function") {
+      rn.gmr.switchSeg(key);
+      return;
+    }
     /* 空快照（字段在、三类槽位一个 file 都没有）永不灌入：它是建段时架子
        空着记下的，用户却可能刚在这一段摆了图、还没来得及切段 stash。空灌
        零收益，只会把刚摆的素材清掉，随后到达的 switch 广播还会把空架面

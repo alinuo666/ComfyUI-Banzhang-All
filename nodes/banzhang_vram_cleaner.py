@@ -15,7 +15,7 @@ from ..core.banzhang_fast_terminate import _check_interrupt, _safe_force_clear_v
 #  👨‍🏫 显存与系统节点
 #  提供两个节点：
 #    🧹 全能系统净化 —— 卸载模型 + 清缓存 + 回收 aimdo VBAR
-#    🛡️⚡ 显存守卫   —— 显存预留（物理占位 + 内核封锁）+ 快速中断
+#    🛡️⚡ 显存守卫   —— 显存预留预算+ 快速中断
 #
 #  近期变更：
 #   - 合并原「显存预留卫士」「全能快速中断」为「显存守卫」，二者已下线。
@@ -148,31 +148,17 @@ def _release_aimdo_vbar(aggressive: bool = True) -> tuple[int, int]:
         patcher = getattr(lm, "model", None)
         if not isinstance(patcher, cls):
             continue
-        # 先看这块 VBAR 当前驻留了多少
+        # 这里只回收驻留页，模型由后续的 unload_all_models 统一卸载。
         try:
             vbar = patcher._vbar_get()
-            before = vbar.loaded_size() if vbar is not None else 0
-        except Exception:
-            before = 0
-
-        # 全部驻留页卸掉
-        try:
-            if vbar is not None:
-                vbar.free_memory(1 << 62)
-        except Exception:
-            pass
-        try:
-            patcher.unload()
-        except Exception:
-            pass
-        try:
-            if vbar is not None:
-                after = vbar.loaded_size()
-                if after < before:
-                    freed += before - after
-        except Exception:
-            pass
-        n += 1
+            if vbar is None:
+                continue
+            released = vbar.free_memory(1 << 62)
+            if released > 0:
+                freed += released
+                n += 1
+        except Exception as e:
+            print(f"[净化] ⚠️ VBAR 驻留页回收失败：{e}")
 
     # 收尾：让 aimdo 立刻回收已释放的页，并复位水位线（否则它会按旧水位继续占）
     if aggressive and n:
@@ -206,8 +192,8 @@ def _release_aimdo_vbar(aggressive: bool = True) -> tuple[int, int]:
 #    aimdo 自己就有原生预留旋钮，根本不用关它：
 #        comfy_aimdo.control.set_simple_vram_headroom(字节)
 #    它是软预算：aimdo 会为了保住这个空闲量去驱逐自己的 VBAR 页；按内核自己的
-#    说明，「torch 的分配会被计入但不被拒绝」（control.py:215-235）——所以物理
-#    占位那一层仍然保留，用来兜住硬保证。两者叠加才是「ComfyUI 最多用到总量 − N」。
+#    说明，「torch 的分配会被计入但不被拒绝」（control.py:215-235）。另建 CUDA
+#    张量占位会消耗本想留给驱动和其他程序的显存，因此这里仅设置预算。
 #
 #    可用性判据必须取 comfy_aimdo.control.devctxs：
 #        main.py:276-305 只有 ctl.init_devices() 成功时才填它，并同时把
@@ -800,7 +786,7 @@ class BanZhang_VRAM_Cleaner_Node:
 #    3. 不替换 minimum_inference_memory 函数。内核本身是
 #       minimum_inference_memory() = 0.8GB + extra_reserved_memory()，
 #       只改EXTRA_RESERVED_VRAM 就能抬高门槛，且天然可还原。
-#    4. 预留容量 = 0 时完整回滚：释放物理占位、还原内核预留量与 aimdo 原生预留量。
+#    4. 预留容量 = 0 时完整回滚：还原内核预留量与 aimdo 原生预留量。
 #    5. 【本次】不再关闭 Dynamic VRAM。旧版靠
 #           aimdo_enabled = False + CoreModelPatcher 指回经典版
 #       来让 EXTRA_RESERVED_VRAM 生效 —— 代价是之后载入的**每一个**模型都退回
@@ -814,18 +800,7 @@ _guard_state = {
     "aimdo": None,            # comfy.memory_management.aimdo_enabled 原值（仅为旧版遗留状态兜底）
     "core_patcher": None,     # comfy.model_patcher.CoreModelPatcher 原类（同上）
     "aimdo_headroom": None,   # aimdo 原生预留量原值（字节）
-    "tensor": None,           # 物理占位张量
 }
-
-
-def _guard_release_tensor():
-    """释放物理占位张量。仅丢弃引用 + 清缓存，不碰任何其他显存。"""
-    if _guard_state["tensor"] is None:
-        return
-    _guard_state["tensor"] = None
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 def _guard_restore_kernel():
@@ -883,7 +858,7 @@ class BanZhang_VRAM_Guard_Node:
                     "max": 128.0,
                     "step": 0.1,
                     "tooltip": "你想给显卡里留出多少空闲显存，单位 GB。\n"
-                               "例如设2 = 无论 ComfyUI 还是别的程序，都只能用到「总量 − 2GB」。\n"
+                               "例如设 2 = 请模型管理器尽量留下 2 GB 空闲，已有更高预留时沿用原值。\n"
                                "\n"
                                "【怎么填】\n"
                                "· 只是想让浏览器/游戏别被挤爆 → 1.5 ~ 2\n"
@@ -893,7 +868,7 @@ class BanZhang_VRAM_Guard_Node:
                                "【上限】超过总显存 90% 时会自动封顶。\n"
                                "\n"
                                "【设 0 = 完全不启用预留功能】\n"
-                               "释放全部物理占位，并把内核设置还原成启动时的样子。\n"
+                               "还原本节点介入前的预留设置。\n"
                                "这时本节点只剩「快速中断」一个作用。\n"
                                "\n"
                                "【实现方式（全自动，无需选择）】\n"
@@ -918,7 +893,8 @@ class BanZhang_VRAM_Guard_Node:
     CATEGORY = "👨‍🏫班长/显存与系统"
     OUTPUT_NODE = True
 
-    DESCRIPTION = """放在采样器（KSampler）之前：硬保住「预留容量_GB」的空闲显存给其他程序，同时加快点停止的响应。设 0 = 不启用预留，只保留中断。详细取值悬停各参数查看。预留方式全自动：动态显存可用时走 aimdo 原生预留，否则退回内核预留量；不会再关掉动态显存。"""
+    DESCRIPTION = """放在采样器（KSampler）之前：让模型管理器尽量留出指定显存，同时加快点停止的响应。沿用更高的已有预算；设 0 可还原预算，仅保留快速中断。"""
+
     def _apply_intrinsic_guard(self, input_data):
         """中断守护：入口检测 + 标准 UNet 的 block 级 patch。
 
@@ -992,6 +968,13 @@ class BanZhang_VRAM_Guard_Node:
         if fixed:
             print("[显存守卫] ⚙️ " + fix_note)
 
+        # 关闭只需还原设置，即使暂时读不到显卡信息也能执行。
+        if 预留容量_GB <= 0:
+            _guard_restore_kernel()
+            guarded, guard_hint = self._apply_intrinsic_guard(input_data)
+            print(f"[显存守卫] 已关闭额外预留。快速中断：{guard_hint}")
+            return (guarded,)
+
         # ---- 0b. 同步显存读数 ----
         if torch.cuda.is_available():
             try:
@@ -1003,25 +986,7 @@ class BanZhang_VRAM_Guard_Node:
             print("[显存守卫] ❌ 无法获取显卡信息，预留功能未执行")
             return (self._apply_intrinsic_guard(input_data)[0],)
 
-        # ---- 1. 先释放旧占位，避免叠加 ----
-        _guard_release_tensor()
-
         native_ok, native_why = aimdo_native_ready()
-
-        # ---- 2. 预留容量=0 → 不启用预留，完整回滚 ----
-        if 预留容量_GB <= 0:
-            _guard_restore_kernel()
-            guarded, guard_hint = self._apply_intrinsic_guard(input_data)
-            log = (
-                f"🛡️⚡ 预留功能：未启用{sep}\n"
-                f"📊 显卡总共 {total_vram:.1f} GB ｜ 当前已用 {physical_used:.2f} GB\n"
-                f"{sep}\n"
-                f"✅ 物理占位已释放，内核预留量与 aimdo 预留量已还原成介入前的值\n"
-                f"ℹ️ 本节点现在只负责「快速中断」：{guard_hint}\n"
-                f"ℹ️ 想重新启用预留，把「预留容量_GB」改成大于 0 的数值即可。"
-            )
-            print("\n🛡️⚡ [显存守卫]\n" + log)
-            return (guarded,)
 
         # ---- 3. 写预留量：优先 aimdo 原生，不可用时退回内核预留量 ----
         # 两条都写不冲突：aimdo 管动态分页模型，EXTRA_RESERVED_VRAM 管非动态模型。
@@ -1029,9 +994,7 @@ class BanZhang_VRAM_Guard_Node:
         if _guard_state["extra_reserved"] is None:
             _guard_state["extra_reserved"] = comfy.model_management.EXTRA_RESERVED_VRAM
         if _guard_state["aimdo_headroom"] is None and native_ok:
-            # 记下介入前的值，便于 0 时还原（取不到就记 0，还原成 0 也无害）
-            cur = aimdo_get_headroom()
-            _guard_state["aimdo_headroom"] = 0 if cur is None else cur
+            _guard_state["aimdo_headroom"] = aimdo_get_headroom()
 
         # 封顶 90%：留一成给 CUDA context 和驱动固定开销
         safe_ceiling = total_vram * 0.9
@@ -1039,63 +1002,26 @@ class BanZhang_VRAM_Guard_Node:
         capped = final_reserved_gb < 预留容量_GB
         reserve_bytes = int(final_reserved_gb * 1024 * 1024 * 1024)
 
-        comfy.model_management.EXTRA_RESERVED_VRAM = reserve_bytes
+        kernel_budget = max(reserve_bytes, _guard_state["extra_reserved"])
+        comfy.model_management.EXTRA_RESERVED_VRAM = kernel_budget
 
-        aimdo_ok = False
-        aimdo_note = ""
-        if native_ok:
-            aimdo_ok, aimdo_err = aimdo_set_headroom(reserve_bytes)
-            if not aimdo_ok:
-                aimdo_note = f"⚠️ aimdo 原生预留未生效（{aimdo_err}），已由内核预留量接管"
-                print("[显存守卫] ⚠️ " + aimdo_note)
-        else:
-            aimdo_note = f"ℹ️ 动态显存不可用（{native_why}），本次只用内核预留量"
-
-        # ---- 4. 物理占位（失败不报错，内核/aimdo 那层仍然有效） ----
-        phys_ok = False
-        phys_note = ""
-        try:
-            _guard_state["tensor"] = torch.empty(
-                reserve_bytes, dtype=torch.uint8, device="cuda"
-            )
-            phys_ok = True
-        except RuntimeError as e:
-            phys_note = "⚠️ 未能占住物理显存（显卡已满），但内核/aimdo 预留仍然生效"
-            print(f"[显存守卫] ⚠️ 物理占位失败（显存已满），预留仍生效: {e}")
-
-        available_for_comfy = total_vram - final_reserved_gb
-        guarded, guard_hint = self._apply_intrinsic_guard(input_data)
-
-        if aimdo_ok:
-            mech = "aimdo 原生预留（动态显存正常工作，模型仍分页流式加载）"
+        if native_ok and _guard_state["aimdo_headroom"] is not None:
+            native_budget = max(reserve_bytes, _guard_state["aimdo_headroom"])
+            ok, why = aimdo_set_headroom(native_budget)
+            native_note = f"{native_budget / 1024**3:.2f} GB" if ok else f"设置失败：{why}"
         elif native_ok:
-            mech = "内核预留量（aimdo 原生预留未生效，已自动降级）"
+            native_note = "无法读取原预算，保留其设置"
         else:
-            mech = f"内核预留量（{native_why}）"
+            native_note = native_why
 
-        # 这两条说明要接在最后一行后面。反斜杠不能写进 f-string 的表达式里 ——
-        # PEP 701 放宽这条限制是 Python 3.12 的事，3.10/3.11（ComfyUI 便携版
-        # 常见环境）会直接 SyntaxError，整个模块 import 失败，于是「显存净化 /
-        # 显存守卫」两个节点根本没有注册，用户界面只看到"未知节点"。
-        phys_tail = ("\n   " + phys_note) if phys_note else ""
-        aimdo_tail = ("\n   " + aimdo_note) if aimdo_note else ""
-
+        guarded, guard_hint = self._apply_intrinsic_guard(input_data)
         log = (
             f"🛡️⚡ 预留功能：已生效{sep}\n"
             f"📊 显卡总共 {total_vram:.1f} GB ｜ 当前已用 {physical_used:.2f} GB\n"
-            f"{sep}\n"
-            f"🎯 预留空闲 {final_reserved_gb:.2f} GB"
-            f"{'（你设的值超过总量 90%，已自动封顶）' if capped else ''}\n"
-            f"💡 ComfyUI 可用到 {available_for_comfy:.2f} GB 以内\n"
-            f"🧱 物理占位："
-            f"{'成功，任何程序都抢不走这 ' + f'{final_reserved_gb:.2f} GB' if phys_ok else '未成功'}\n"
-            f"⚙️ 预留方式：{mech}\n"
-            f"{sep}\n"
-            f"ℹ️ 动态显存：{'保持开启（不再需要为预留而关闭）' if native_ok else '本次启动未启用'}"
-            f"{('｜' + fix_note) if fixed else ''}\n"
+            f"🎯 请求预留 {final_reserved_gb:.2f} GB"
+            f"{'（超过总量 90%，已封顶）' if capped else ''}\n"
+            f"💡 内核预留预算 {kernel_budget / 1024**3:.2f} GB ｜ aimdo：{native_note}\n"
             f"ℹ️ 快速中断：{guard_hint}"
-            f"{phys_tail}"
-            f"{aimdo_tail}"
         )
         print("\n🛡️⚡ [显存守卫]\n" + log)
         return (guarded,)

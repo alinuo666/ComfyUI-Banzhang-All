@@ -10,8 +10,9 @@ import os
 import time
 
 import numpy as np
+import torch
 
-from . import detection, frames, render
+from . import detection, frames, preview, render
 
 # [引擎时间戳] 进成本行 .py 的加载时间戳 —— 「改了没生效」十有八九是旧进程
 # 还在跑：状态行直接报引擎版本，和磁盘 mtime 对不上就是没重启。
@@ -74,7 +75,7 @@ def _before_after_thumbs(images, out, faces):
             continue
         ratio = min(1.0, max(0.0, float(f.get("ratio", 0.0))))
         idx = min(n - 1, max(0, int(round(ratio * (n - 1)))))
-        before = frames.make_thumb(pick(images, src_cache, idx), box) or f.get("thumb")
+        before = f.get("thumb") or frames.make_thumb(pick(images, src_cache, idx), box)
         f["thumb"] = before
         f["thumb_after"] = frames.make_thumb(pick(out, dst_cache, idx), box) or before
 
@@ -83,10 +84,22 @@ def execute(images, model=None, positive=None, vae=None,
             sam3_model=None, sam3_clip=None,
             sam3_prompt=detection.DEFAULT_PROMPT,
             sam3_threshold=detection.SAM3_THRESHOLD,
-            crop_mode="tracked", crop_scale=1.4, megapixels=1.0,
-            steps=6, denoise=0.3, feather=24):
-    """返回 (修好的帧, info)。info 含 backend/faces/report/log。"""
+            crop_mode="tracked", crop_scale=1.4, megapixels=0.5,
+            steps=4, denoise=0.3, feather=8, node_id=None, fps=24.0,
+            crop_padding=None, crop_long_edge=None):
+    """返回 (修好的帧, info)。info 含 backend/faces/report/log。
+
+    node_id：面板事件的目标（来自 UNIQUE_ID 隐藏输入）；为空时预览整体静默，
+    主流程一个字不变。fps：原片帧率，只用来把「帧数」换成「秒」让循环动画
+    与成片同速。
+    """
+    seg_sec = (int(images.shape[0]) / float(fps or 24.0)) \
+        if isinstance(images, torch.Tensor) and images.ndim == 4 else 0.0
+    # 预览只服务「检出的人」：整片画面不在这里推（用户明确要的是每张脸的裁剪画面）。
+    preview.stage(node_id, "准备中")
+
     if model is None or positive is None or vae is None:
+        preview.stage(node_id, "缺输入")
         return images, {
             "backend": "none", "faces": [], "coverage": 0.0,
             "report": "❌ 像素精修需要「H3模型」「正条件」「解码VAE」三口，缺一口无法运行",
@@ -94,11 +107,13 @@ def execute(images, model=None, positive=None, vae=None,
 
     sam3_cond, cond_note = detection.encode_prompt(sam3_clip, sam3_prompt)
     if sam3_cond is None:
+        preview.stage(node_id, "提示词未生效")
         return images, {
             "backend": "none", "faces": [], "coverage": 0.0,
             "report": "⚠️ %s —— 帧序列原样透传" % cond_note,
         }
 
+    preview.stage(node_id, "SAM3.1 追踪人脸")
     det = detection.detect_faces(images, None, vae=None,
                                  sam3_model=sam3_model, sam3_cond=sam3_cond,
                                  sam3_threshold=sam3_threshold)
@@ -109,6 +124,7 @@ def execute(images, model=None, positive=None, vae=None,
     if not faces:
         info = dict(base_info)
         info["report"] = "⚠️ %s —— 未检出人脸，帧序列原样透传" % det.get("note", "")
+        preview.stage(node_id, "未检出人脸")
         return images, info
 
     info = dict(base_info)
@@ -117,20 +133,40 @@ def execute(images, model=None, positive=None, vae=None,
     clean_positive, stripped = clean_conditioning(positive)
     info["cond_stripped"] = stripped
     log = info.setdefault("log", [])
+    # 检出是谁 → 立刻给每个人推一路「修复前」小视频。编码 112 秒 + 采样几分钟里
+    # 每格都在动：既看得见跟的是哪张脸，也分得清「在跑」和「卡住」。
+    preview.stage(node_id, "推送各脸原片预览")
+    n_pv = preview.faces(node_id, images, faces, kind="before", fps=fps)
+    if n_pv:
+        log.append("已推 %d 路修复前小视频（每人 12 帧、边长 128）" % n_pv)
+    # 「为什么是这几个人」的证据：每个人由哪几段追踪合并、在各段里活了多少帧。
+    for f in faces:
+        tr = f.get("tracks") or [f.get("index")]
+        log.append("人#%s ← 追踪段 %s（有效 %s 帧，最佳框 %.0f×%.0f）" % (
+            f.get("index"), "/".join(str(t) for t in tr),
+            f.get("frames_valid", "?"),
+            float(f["box"][2]) - float(f["box"][0]),
+            float(f["box"][3]) - float(f["box"][1])))
     try:
         out, rinfo = render.execute(
             images, faces, model, clean_positive, vae,
             crop_mode=crop_mode, crop_scale=crop_scale, megapixels=megapixels,
-            steps=steps, denoise=denoise, feather=feather, log=log)
+            steps=steps, denoise=denoise, feather=feather, log=log,
+            node_id=node_id, seg_sec=seg_sec,
+            crop_padding=crop_padding, crop_long_edge=crop_long_edge,
+            frame_masks=det.get("frame_masks"))
         ok = True
     except Exception as e:
         import traceback
         traceback.print_exc()
         why = str(e).splitlines()[0][:110]
         first = (info.get("log") or [""])[0]
+        # 失败必须继续显性报错，但保持一行：前端按「｜」拆行，这里用「·」连接。
         info["report"] = "⚠️ %s；精修失败已回退（%s%s）" % (
-            det.get("note", ""), why, ("｜" + first) if first else "")
+            det.get("note", ""), why, ("·" + first) if first else "")
+        info["detail"] = "｜".join(x for x in (info.get("log") or []) if x)
         out, ok = images, False
+        preview.stage(node_id, "已回退原片")
 
     # 失败也要出对比图：左右都等于原帧，面板看得出「没变化」而不是「没出图」
     _before_after_thumbs(images, out, faces)
@@ -139,24 +175,27 @@ def execute(images, model=None, positive=None, vae=None,
 
     mode_zh = {"combined": "静止大框", "tracked": "恒尺寸跟随",
                "zoomed": "变焦跟随"}.get(crop_mode, crop_mode)
-    extra = ""
+    # [面板只留一行] 用户要求：底部只出现「✅ 已用 SAM3.1 记忆追踪…；N 张脸」这一条
+    # 结论。前端把报告按「｜」拆成多行全文直显（js/banzhang_facefix.js showReport），
+    # 所以参数明细/规划简报/逐行日志一律不进 report，改存 info["detail"]，
+    # 由节点写进工程 JSON 的 last_detail：排查时从「工程JSON」输出口或存档里取。
+    info["report"] = "✅ %s；%d 个修复目标" % (det.get("note", ""), len(faces))
+    detail = ["%s、包边 %.2f、放大 %.2fMP、%d 步、降噪 %.2f、阈值 %.2f、羽化 %d、"
+              "引擎 %s" % (mode_zh, float(crop_scale), float(megapixels),
+                           int(steps), float(denoise), float(sam3_threshold),
+                           int(feather), _ENGINE_STAMP)]
     if stripped:
-        extra += "、剥掉 %d 个主画布条件" % stripped
+        detail.append("剥掉 %d 个主画布条件" % stripped)
     if float(denoise) >= 0.5:
-        extra += "、⚠️降噪≥0.5 高频伪影风险增大"
-    info["report"] = ("✅ %s；%d 张脸｜%s、包边 %.2f、放大 %.2fMP、"
-                      "%d 步、降噪 %.2f、阈值 %.2f、羽化 %d、引擎 %s%s"
-                      % (det.get("note", ""), len(faces), mode_zh,
-                         float(crop_scale), float(megapixels), int(steps),
-                         float(denoise), float(sam3_threshold), int(feather),
-                         _ENGINE_STAMP, extra))
-    # [证据全文] 规划简报 + 逐行日志附到报告末尾：前端状态区默认两行截断，
-    # 点「展开」即可逐行核对。
-    tail = []
+        detail.append("⚠️降噪≥0.5 高频伪影风险增大")
     if rinfo.get("plan_report"):
-        tail.append(rinfo["plan_report"])
-    if log:
-        tail.extend(log)
-    if tail:
-        info["report"] += "｜" + "｜".join(tail)
+        detail.append(rinfo["plan_report"])
+    detail.extend(x for x in log if x)
+    # 收尾把每个人的「修复后」小视频推上去：格子右半换成成片循环，
+    # 不用接预览节点、也不用打开输出文件就能左右对着看同一张脸。
+    n_af = preview.faces(node_id, out, faces, kind="after", fps=fps)
+    if n_af:
+        detail.append("已推 %d 路修复后小视频" % n_af)
+    info["detail"] = "｜".join(detail)
+    preview.stage(node_id, "完成")
     return out, info

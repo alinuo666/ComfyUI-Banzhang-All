@@ -39,8 +39,14 @@ def decode_keyframes(vae, h3_latent, max_frames=MAX_DETECT_FRAMES):
         return None
 
 
-def make_thumb(frame_rgb_u8, box, size=THUMB_SIZE):
-    """裁剪人脸框并缩到 size×size，返回 data URI base64 PNG；失败返回 None。"""
+def crop_square(frame_rgb_u8, box, size=THUMB_SIZE):
+    """以人脸框为中心取**正方形**视野后缩到 size×size，返回 uint8 数组（失败 None）。
+
+    为什么不能直接把框 resize 成正方形：脸框几乎都是横长的（肩宽 > 头高），
+    非等比缩放会把脸压扁 —— 用户看到的「预览不是正方形」根子上是这个，
+    跟前端格子形状是两个独立毛病（前端那边用行高=半格宽解决）。
+    视野超出画面时用边缘复制补齐（边长不变 → 仍是正方形），保证整张脸都在图里。
+    """
     try:
         import cv2
         h, w = frame_rgb_u8.shape[:2]
@@ -49,10 +55,29 @@ def make_thumb(frame_rgb_u8, box, size=THUMB_SIZE):
         x2 = max(x1 + 1, min(x2, w))
         y1 = max(0, min(y1, h - 1))
         y2 = max(y1 + 1, min(y2, h))
-        crop = frame_rgb_u8[y1:y2, x1:x2]
+        side = max(1, max(x2 - x1, y2 - y1))
+        ox1 = (x1 + x2) // 2 - side // 2
+        oy1 = (y1 + y2) // 2 - side // 2
+        crop = frame_rgb_u8[max(0, oy1):min(h, oy1 + side),
+                            max(0, ox1):min(w, ox1 + side)]
         if crop.size == 0:
             return None
-        crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
+        if crop.shape[0] != side or crop.shape[1] != side:
+            crop = cv2.copyMakeBorder(
+                crop, max(0, -oy1), max(0, oy1 + side - h),
+                max(0, -ox1), max(0, ox1 + side - w), cv2.BORDER_REPLICATE)
+        return cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
+    except Exception:
+        return None
+
+
+def make_thumb(frame_rgb_u8, box, size=THUMB_SIZE):
+    """缩略图 data URI PNG。与预览小视频共用 crop_square —— 正方形视野规则只有一处定义。"""
+    try:
+        import cv2
+        crop = crop_square(frame_rgb_u8, box, size)
+        if crop is None:
+            return None
         ok, buf = cv2.imencode(".png", cv2.cvtColor(crop, cv2.COLOR_RGB2BGR))
         if not ok:
             return None

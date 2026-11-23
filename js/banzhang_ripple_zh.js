@@ -5,22 +5,23 @@ import { app } from "../../scripts/app.js";
 const LABELS = {
     "BZ_RippleClip": {
         widgets: {
-            video: "🎞️ 视频文件", duration: "⏱️ 片段时长（秒）", megapixels: "📐 输出分辨率（MP）",
+            video: "🎞️ 视频文件", duration: "⏱️ 片段时长", megapixels: "📐 输出分辨率（MP）",
             window_start: "🎬 窗口起始帧", crop: "✂️ 裁剪框",
             allow_upscale: "🔍 允许放大", resize_method: "🔧 缩放算法",
             output_width: "↔️ 适配宽度", output_height: "↕️ 适配高度",
         },
         inputs: {},
         outputs: {
-            video: "🎬 窗口视频",
-            source_window: "🎞️ 窗口原画面", audio: "🔊 原声音频",
+            video: "🎬 视频",
+            source_window: "🖼️ 图像", audio: "🔊 音频",
             first_frame: "🖼️ 首帧", last_frame: "🖼️ 尾帧",
+            fps: "🎞️ 帧率", duration: "⏱️ 时长（秒）", total_frames: "🎞️ 总帧数",
         },
     },
     "BZ_RippleApply": {
         widgets: { prompt: "📝 生成提示词" },
         inputs: {
-            clip: "🔤 文本编码器 CLIP", vae: "🧊 视频 VAE", ripple: "🎬 窗口视频",
+            clip: "🔤 文本编码器 CLIP", vae: "🧊 视频 VAE", ripple: "🎬 视频",
         },
         outputs: { positive: "🧭 正向条件", latent: "🧊 空白潜空间" },
     },
@@ -28,9 +29,9 @@ const LABELS = {
         widgets: {
             save: "💾 保存内容", filename_prefix: "📁 文件名前缀",
         },
-        inputs: { images: "🖼️ 生成画面", ripple: "🎬 窗口视频" },
+        inputs: { images: "🖼️ 生成画面", ripple: "🎬 视频" },
         outputs: {
-            images: "🖼️ 成片画面", audio: "🔊 原声音频",
+            images: "🖼️ 成片画面", audio: "🔊 音频",
             frame_rate: "🎞️ 帧率", comparison: "↔️ 源片对比",
         },
     },

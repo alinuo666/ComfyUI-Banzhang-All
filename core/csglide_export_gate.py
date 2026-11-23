@@ -62,7 +62,8 @@ def export_gate(fs: Dict[str, Any], plan: Dict[str, Any]) -> List[str]:
         last_to = max(last_to, end)
 
     total = int(fs.get("total_frames") or 0)
-    if total and last_to and total != last_to:
+    full_range = cut >= max(int(r.get("index") or 0) for r in rows)
+    if full_range and total and last_to and total != last_to:
         errs.append("时间轴总帧数 %d 与最后一段 clip_to %d 不一致 —— 全片长度口径分叉"
                     % (total, last_to))
 

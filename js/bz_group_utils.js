@@ -51,3 +51,19 @@ export function inGroup(group, node) {
 export function groupTitle(group) {
   return group.title || group._title || "";
 }
+
+/* 正常嵌套框归属最内层；交叉重叠或相同范围不猜归属。 */
+export function nodeGroupOwner(groups, node) {
+  const hits = groups.filter((g) => inGroup(g, node));
+  if (hits.length <= 1) return hits[0] || null;
+  return hits.find((inner) => {
+    const a = groupBounding(inner);
+    return a && hits.every((outer) => {
+      if (inner === outer) return true;
+      const b = groupBounding(outer);
+      return b && a[0] >= b[0] && a[1] >= b[1]
+        && a[0] + a[2] <= b[0] + b[2] && a[1] + a[3] <= b[1] + b[3]
+        && (a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2] || a[3] !== b[3]);
+    });
+  }) || null;
+}

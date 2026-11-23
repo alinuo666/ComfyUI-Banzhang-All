@@ -84,6 +84,8 @@ class ProjectStore {
        否则画布上还挂着别的导演台，它的 3s 巡检照样用后端旧值回灌、抢主线程。 */
     this._globalRender = 0;
     this._renderNodes = new Set();
+    this._batchPrompts = new WeakSet();
+    this._deliveryPrompts = new WeakSet();
   }
   phaseOf(castNode) {
     return this._phase.get(castNode) || "boot";
@@ -93,6 +95,7 @@ class ProjectStore {
     if (this.phaseOf(castNode) === "boot") this._phase.set(castNode, "editing");
   }
   beginRender(castNode) {
+    if (this._renderNodes.has(castNode)) return;
     this._phase.set(castNode, "rendering");
     this._globalRender += 1;
     this._renderNodes.add(castNode);
@@ -106,6 +109,14 @@ class ProjectStore {
   /* 全局渲染锁是否生效（任何节点在渲染 = 全画布冻结自愈回灌）。 */
   isGloballyRendering() {
     return this._globalRender > 0;
+  }
+  markBatchPrompt(prompt) { this._batchPrompts.add(prompt); }
+  markDeliveryPrompt(prompt) { this._deliveryPrompts.add(prompt); }
+  takeDeliveryPrompt(prompt) { return this._deliveryPrompts.delete(prompt); }
+  takeBatchPrompt(prompt) {
+    const marked = this._batchPrompts.has(prompt);
+    if (marked) this._batchPrompts.delete(prompt);
+    return marked;
   }
   /* 是否允许"后端→前端"自动灌入：仅 boot 态。显式重建/切工程走 force=true。 */
   canPullFromBackend(castNode) {
@@ -153,12 +164,9 @@ class ProjectStore {
     const fire = m._fire[key];
     delete m._fire[key];
     clearTimeout(m._timers[key]);
-    let p;
-    try { p = Promise.resolve(fire()); } catch (e) { p = Promise.resolve(null); }
-    /* 同键网络写严格串行：防后写先到、旧值盖新值。这里登记的是纯网络
-       Promise（一定会 settle），不含防抖等待，故不会被取消卡死。 */
+    /* 在前一笔完成后才发起下一笔，不能只串行等待已发出的请求。 */
     const prev = m.get(key);
-    const next = Promise.resolve(prev).then(() => p).catch(() => {});
+    const next = Promise.resolve(prev).then(() => fire()).catch(() => {});
     m.set(key, next);
     next.finally(() => { if (m.get(key) === next) m.delete(key); });
   }
@@ -176,6 +184,11 @@ class ProjectStore {
     });
     /* 等所有网络写 settle。 */
     await Promise.all([...m.keys()].map((k) => m.get(k))).catch(() => {});
+  }
+
+  hasPendingWrite(name, key) {
+    const m = this._pending.get(name);
+    return !!(m && ((m._fire && m._fire[key]) || m.has(key)));
   }
 
   /**

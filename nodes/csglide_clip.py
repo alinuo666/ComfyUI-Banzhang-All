@@ -129,7 +129,7 @@ class CSGlideClipLoadCS(_NameMixin):
     CATEGORY = "👨‍🏫班长/视频处理"
     DESCRIPTION = "把「🎬 H3 VAE 快速解码」归档的那一段 AV latent 读回图里（跟随时间轴当前阶段）。"
 
-    def load(self, 片名, 段落, 版本=0, 没有档案时="直通（不回填）", 顺序锚=None):
+    def load(self, 片名, 段落, 版本=0, 没有档案时="直通（不回填）", 顺序锚=None, stage=None):
         if _st_load is None:
             raise RuntimeError("H3 段落调取：safetensors 不可用。")
         if 顺序锚 is None:
@@ -155,7 +155,7 @@ class CSGlideClipLoadCS(_NameMixin):
         take = int(版本) if int(版本) > 0 else int(meta.get("current_take") or 1)
         # 20261111 阶段 2：整片潜空间拼接等读者一律跟随时间轴当前选中阶段。
         # s1 沿用旧文件名（零迁移），s2 是同一 take 的第二份加工档。
-        stage = chain.current_stage(片名)
+        stage = stage or chain.current_stage(片名)
         path = chain.clip_cont(片名, cid, take, stage)
         if not os.path.exists(path):
             label = "一采" if stage == "s1" else "二采"

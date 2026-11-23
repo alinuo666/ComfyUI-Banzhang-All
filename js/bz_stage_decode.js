@@ -58,7 +58,16 @@ export function decodeStage(output, nodeId, maxHops = 16) {
       const cls = String(spec.class_type || "");
       if (UPSCALE_TYPES.includes(cls)) upscales.add(nid);
       if (CAST_TYPES.includes(cls)) {
-        const b = CAST_PORT_BASE[Number(outIdx)];
+        let b = CAST_PORT_BASE[Number(outIdx)];
+        if (Number(outIdx) === 12) {
+          try {
+            const raw = spec.inputs?.h3_data || "{}";
+            const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+            const stages = (data.stage_flow?.stages || []).filter((s) => s?.kind === "latent");
+            const boundary = stages.findIndex((stage, i) => i > 0 && stage.enabled && !stages[i - 1].enabled);
+            b = boundary > 0 ? boundary - 1 : 0;
+          } catch (_) { b = 0; }
+        }
         base = Math.max(base, b === undefined ? 0 : b);
         continue;
       }

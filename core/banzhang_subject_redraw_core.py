@@ -20,20 +20,23 @@ from . import banzhang_subject_redraw_planner as planner
 
 # ---- 遮罩外扩 + 边缘柔化（角色替换场景防旧轮廓残留） -----------------------
 
-def grow_soft_mask(masks, grow_px):
-    """遮罩整体外扩 grow_px 像素（灰度膨胀），再按外扩量的一半做两遍盒模糊
-    （近似高斯）。为什么在入口做：外扩后的遮罩要同时喂给裁剪规划、latent
+def grow_soft_mask(masks, grow_px, feather_px=0):
+    """遮罩整体外扩 grow_px 像素（灰度膨胀），再做两遍盒模糊柔化边缘（近似高斯）。
+    feather_px 是模糊半径：0=自动（外扩量的一半，与拆分前的旧行为逐位一致），
+    >0=独立控制过渡带——可以「大外扩+窄羽化」盖住地面投影而不扩大重画过渡。
+    为什么在入口做：外扩后的遮罩要同时喂给裁剪规划、latent
     重绘掩码和贴回范围，三处共享同一个盖住旧轮廓环带的遮罩，缺一处就残留。
     贴边不外溢：池化零填充使遮罩长不到画面外。"""
-    if grow_px <= 0:
+    grow_px, feather_px = int(grow_px), int(feather_px)
+    if grow_px <= 0 and feather_px <= 0:
         return masks
     x = masks.detach().float()
     was3d = x.ndim == 3
     if was3d:
         x = x[:, None]          # [T,H,W] → [T,1,H,W]，帧当 batch 维做空间池化
-    for _ in range(int(grow_px)):
+    for _ in range(max(0, grow_px)):
         x = torch.nn.functional.max_pool2d(x, 3, stride=1, padding=1)
-    blur = max(2, int(grow_px) // 2)
+    blur = feather_px if feather_px > 0 else max(2, grow_px // 2)
     k = blur * 2 + 1
     # count_include_pad=False：边缘的平均不把补进来的零算进去，贴边不虚
     x = torch.nn.functional.avg_pool2d(x, k, stride=1, padding=blur, count_include_pad=False)
@@ -200,7 +203,8 @@ def _zh_report(binary, boxes, scale, sel, info, out_size):
 
 
 def plan_and_crop(original_images, masks, sel, crop_scale, aspect_ratio,
-                  divisible_by, upscale_megapixels=0.0, resize_method="auto"):
+                  divisible_by, upscale_megapixels=0.0, resize_method="auto",
+                  *, crop_padding=None, long_edge=None):
     """清理后的完整裁剪端：规划每帧裁剪框 → 切片/重采样 → 返回（帧、遮罩、框、报告）。
     crop_scale<=0 时不裁剪，全帧按网格重整后直通。"""
     if original_images.shape[0] != masks.shape[0]:
@@ -214,6 +218,13 @@ def plan_and_crop(original_images, masks, sel, crop_scale, aspect_ratio,
     full_frame = crop_scale <= 0.0
     # 阈值 0.1：羽化边缘算主体、数值噪声尾巴不算（原节点同款）
     binary = masks.detach().cpu().numpy() > 0.1
+    if crop_padding is not None and crop_padding >= 0:
+        # 只扩大规划视野，采样遮罩仍使用原脸区。
+        padding = int(crop_padding)
+        if padding:
+            binary = ndimage.maximum_filter(binary, size=(1, 2*padding+1, 2*padding+1))
+        crop_scale = 1.0
+        full_frame = False
     if full_frame:
         img_h, img_w = masks.shape[1], masks.shape[2]
         boxes = [{"x": 0, "y": 0, "width": img_w, "height": img_h}
@@ -237,7 +248,12 @@ def plan_and_crop(original_images, masks, sel, crop_scale, aspect_ratio,
         gh = math.ceil(bh / divisible_by) * divisible_by
         if (gw, gh) != (bw, bh):
             size = (gw, gh)
-    if upscale_megapixels != 0:
+    if long_edge is not None and long_edge > 0:
+        sw, sh = size or (bw, bh)
+        scale = max(1.0, long_edge / max(sw, sh))
+        size = (max(divisible_by, round(sw * scale / divisible_by) * divisible_by),
+                max(divisible_by, round(sh * scale / divisible_by) * divisible_by))
+    elif (long_edge is None or long_edge < 0) and upscale_megapixels != 0:
         up = _upscale_size(*(size or (bw, bh)), upscale_megapixels, divisible_by)
         if up is not None:
             size = up
@@ -271,8 +287,9 @@ def plan_and_crop(original_images, masks, sel, crop_scale, aspect_ratio,
 # ---- 贴回（原 SubjectUncrop 执行逻辑移植） ---------------------------------
 
 def uncrop(original_images, cropped_images, bboxes, cropped_masks,
-           feather, resize_method="auto"):
-    """把处理过的裁剪帧羽化贴回原帧。裁剪框不接时视为全帧；框/遮罩单帧时广播。"""
+           feather, resize_method="auto", *, feather_mask=False):
+    """把处理过的裁剪帧羽化贴回原帧。裁剪框不接时视为全帧；框/遮罩单帧时广播。
+    裁剪框越出画面边界时自动把帧撑到模型画布 / 把坐标钳进界内，不再抛张量尺寸错误。"""
     if bboxes is None:
         bboxes = {"x": 0, "y": 0,
                   "width": original_images.shape[2], "height": original_images.shape[1]}
@@ -306,10 +323,27 @@ def uncrop(original_images, cropped_images, bboxes, cropped_masks,
         boxes = [f[0] for f in (frames * n if len(frames) == 1 else frames[:n])]
 
     img_h, img_w = original_images.shape[1], original_images.shape[2]
+    # 越界护栏：裁剪框右/下越界（裁剪链与本节点画的画布口径不一致，或外部接来的框）
+    # 时把帧+遮罩撑到裁剪节点「自动对齐模型画布」同款画布再贴；负起点只做逐帧钳位，
+    # 防 region 切片环绕取到对面边缘的像素。两种情况对正常不越界的框都是 no-op。
+    grow = (max(b["x"] + b["width"] for b in boxes) > img_w
+            or max(b["y"] + b["height"] for b in boxes) > img_h)
+    if grow:
+        from .banzhang_h3_sample_core import _adapt_canvas  # 同包兄弟模块；延后导入，避开模块加载顺序问题
+        img_w, img_h = _adapt_canvas(img_w, img_h)
+        original_images = comfy.utils.common_upscale(
+            original_images.movedim(-1, 1), img_w, img_h, "lanczos", "disabled"
+        ).movedim(1, -1)
+        print(f"⚠️ [主体重绘·贴回] 裁剪框越出原始帧边界，已撑到模型画布 "
+              f"{img_w}x{img_h} 再贴回（裁剪链若用了别的画布口径，边缘会轻微挤压）")
     out = original_images.clone()
     for i, b in enumerate(boxes):
         # BOUNDING_BOX 载荷只是约定，SAM3 会给浮点坐标
         x, y, w, h = (int(round(b[k])) for k in ("x", "y", "width", "height"))
+        x = max(0, min(x, img_w - 1))
+        y = max(0, min(y, img_h - 1))
+        w = max(1, min(w, img_w - x))
+        h = max(1, min(h, img_h - y))
         # 途中被重采样过的裁剪（变焦模式/放大参数/中间接了缩放节点）在这里缩回原框
         crop = resize_image(cropped_images[i], w, h, resize_method)
 
@@ -330,6 +364,13 @@ def uncrop(original_images, cropped_images, bboxes, cropped_masks,
 
         if cropped_masks is not None:
             m = resize_mask(cropped_masks[i], w, h)
+            if feather_mask and feather > 0:
+                # 在成片像素坐标内沿脸区并集向内渐变；贴到裁剪框边缘时由上面的渐变接管。
+                inside = m.detach().cpu().numpy() > 0
+                if inside.any() and not inside.all():
+                    distance = ndimage.distance_transform_cdt(inside, metric="chessboard")
+                    weight = np.minimum(distance.astype(np.float32) / (feather + 1), 1.0)
+                    m = m * torch.from_numpy(weight).to(m)
             alpha = alpha * m.clamp(0.0, 1.0).to(dtype=out.dtype, device=out.device)
 
         alpha = alpha[..., None]

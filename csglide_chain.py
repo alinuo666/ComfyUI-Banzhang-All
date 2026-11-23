@@ -442,6 +442,13 @@ def save_chain(name, data):
     else:
         _write_json(os.path.join(d, "chain.json"), data)
     _bump_archive()
+    # 片级落盘**在唯一写盘口**广播，不靠各调用方自觉：原先 15 个业务写点各自
+    # 手写 ws_broadcast，而 set_stage —— 包括收档时把阶段从 s1 推进到 s2 ——
+    # 恰好是漏掉的那一个。后端阶段变了、前端 ui.stage 不知道，导出的并发保护
+    # 就把「后端自己推进」当成「用户改了阶段」，永久拒绝（20261123）。
+    # 与那 15 处显式广播会在同一次写入里重复发一条：bz_store 有 120ms 合帧窗口，
+    # 会并成一次拉取，不必去删那些（删是大改，且它们各自还带 clip/type 语义）。
+    ws_broadcast("chain", name)
 
 
 def clip_json(name, cid):
@@ -501,8 +508,8 @@ def film_pick(name, cid, take=1, stage=None, variant=None, meta=None, fallback=N
     """时间轴 / 导出 / 整片口该用哪一份成片 —— 所有读侧的唯一裁决口。
 
     真值是 take_params[take].films（收片时登记）。老档案没登记时原样回退到
-    fallback（一般就是 clip["film"]），升级不会让时间轴突然空白。请求阶段缺档
-    时回退到该阶段约定文件名，再回退到 s1 主档，避免「切了阶段却一片空白」。
+    fallback（一般就是 clip["film"]）。已有分阶段登记的档案，请求阶段缺档就
+    返回空，避免其他阶段冒充；只有未登记阶段的旧档案才保留主档回退。
     variant 形参保留只为兼容旧调用签名，一律忽略。
     """
     s = str(stage or current_stage(name)).strip().lower()
@@ -516,7 +523,8 @@ def film_pick(name, cid, take=1, stage=None, variant=None, meta=None, fallback=N
     cand = clip_film(name, cid, take, s)
     if os.path.isfile(cand):
         return cand
-    return fallback or clip_film(name, cid, take)
+    # 已按阶段登记的新档案缺哪采就如实缺失，不能拿另一采冒充当前阶段。
+    return "" if films else fallback or clip_film(name, cid, take)
 
 
 @chainlocked
@@ -569,7 +577,8 @@ def set_stage(name, stage):
 # ---------------- 分镜轨（20261119）：时间轴图片锚 ----------------
 # 锚存片级 meta "bzsa.board"（与音频轨 bzsa.tracks 同库），
 # entries = [{file: input 相对路径, at: 整片绝对帧号, mtime}]。
-# 前端分镜轨经 GET/POST /cglide/chain/board 读写；Cast 出条件时
+# 前端分镜轨经 GET /cglide/chain/board 读、POST /cglide/chain/board_set 写
+# （读写分开是硬规矩，见路由处注释与 _selftest_routes.py）；Cast 出条件时
 # _board_keyframes 把落在本段的锚挂进 minimax_keyframes（与续写锚同构）。
 
 def board_of(name):
@@ -590,24 +599,35 @@ def board_set(name, entries):
 
     file 只认 input 目录内相对路径（拒 .. 穿越），不存在的文件直接丢；
     at 钳为非负整数。写后广播＋清片缓存，时间轴与 Cast 指纹跟着刷新。
+
+    返回 (clean, dropped)。dropped 是**被丢掉的那几张**和原因（[{file, 原因}]）——
+    本口是整表覆写，静默丢一张就等于静默删一条锚，用户完全看不出来。20261119
+    加：读回失败时前端会空表提交，那正是「以为轨道是空的、一保存把旧的抹掉」的
+    路径，必须把明细报出去，不能只回一份看着正常的 clean。
     """
     if not name:
         raise ValueError("缺少片名")
     inp = folder_paths.get_input_directory() if folder_paths is not None else "input"
-    clean, seen = [], set()
+    clean, seen, dropped = [], set(), []
     for e in entries or []:
         if not isinstance(e, dict):
+            dropped.append({"file": str(e)[:120], "原因": "条目不是对象"})
             continue
         rel = str(e.get("file") or "").replace("\\", "/").strip("/")
-        if not rel or ".." in rel.split("/"):
+        if not rel:
+            dropped.append({"file": "", "原因": "没有文件名"})
+            continue
+        if ".." in rel.split("/"):
+            dropped.append({"file": rel, "原因": "路径越界（含 ..）"})
             continue
         p = os.path.join(inp, *rel.split("/"))
         if not os.path.isfile(p):
+            dropped.append({"file": rel, "原因": "input 目录里找不到这个文件"})
             continue
         at = max(0, int(e.get("at") or 0))
         key = (rel, at)
         if key in seen:
-            continue
+            continue          # 同图同帧重复提交，合并即可，不算丢
         seen.add(key)
         clean.append({"file": rel, "at": at, "mtime": int(os.path.getmtime(p))})
     clean.sort(key=lambda x: x["at"])
@@ -616,7 +636,7 @@ def board_set(name, entries):
     with _film_memo_lock:
         _film_memo.pop(str(name), None)
     ws_broadcast("board", name)
-    return clean
+    return clean, dropped
 
 
 def clip_cont(name, cid, take=1, stage=None):
@@ -661,6 +681,29 @@ def clip_cont_resolve(name, cid, stage=None):
             return p
     exact = clip_cont(name, cid, cur, stage)
     return exact if exact and os.path.isfile(exact) else None
+
+
+def clip_continuation_resolve(name, cid):
+    """上一段当前版本实际可用的承接档；视频阶段不产 latent，不能按显示阶段盲拼。
+
+    与阶段总线的精确读档不同，续接优先认收片凭据，再认本版本登记的潜空间档。
+    不回退旧版本、不扫目录，避免本次缺档时接上旧画面。
+    """
+    meta = load_clip(name, cid) or {}
+    take = int(meta.get("current_take") or 1)
+    rec = (meta.get("take_params") or {}).get(str(take)) or {}
+    owner = str(rec.get("cont_saved_of") or "")
+    if owner and owner != str(cid):
+        raise ValueError("上一段（%s）的承接档凭据属于 %s，已拒绝续接" % (cid, owner))
+    saved = str(rec.get("cont_saved") or "")
+    if saved and os.path.isfile(saved):
+        return saved
+    stages = rec.get("stages") or {}
+    for stage in dict.fromkeys((current_stage(name), "s3", "s2", "s1")):
+        path = str(stages.get(stage) or clip_cont(name, cid, take, stage))
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def clip_film_resolve(name, cid, stage=None):
@@ -1936,18 +1979,91 @@ def _media_brief(desc):
     }
 
 
+def _take_for_fingerprint(meta, fingerprint, has_decode):
+    """收片按本次执行的指纹认版本，不能用异步回调时可能已推进的 current_take。"""
+    records = meta.get("take_params") or {}
+    matches = [int(take) for take, record in records.items()
+               if record.get("run_fingerprint") == fingerprint
+               or fingerprint in (record.get("run_fingerprints") or [])]
+    if matches:
+        return max(matches)
+    if has_decode and any(r.get("run_fingerprint") for r in records.values()):
+        raise ValueError("本次执行没有对应的潜空间版本，已拒绝把成片收给其他任务的版本")
+    return max(1, int(meta.get("current_take") or 1))
+
+
+def _identity_from_history(entry):
+    """从本次执行的历史图认「工程名 + 段 id」—— 提交时冻结的身份。
+
+    收片三条路（前端 collectRun / 裸跑自动收片 / 单轨阶段判定）共用这一口径：
+    认图不认界面。跑批中途切工程、改段号，片仍收进提交时那一段。
+    取不到返回 ("", "")。
+    """
+    from .nodes.csglide_cast import parse_h3_data
+
+    graph = _history_graph(entry) or {}
+    for spec in graph.values():
+        if (spec or {}).get("class_type") != "CSGlideCastCS":
+            continue
+        raw = (spec.get("inputs") or {}).get("h3_data")
+        # 外接 h3_data（接线）时这里不是字符串而是 [节点, 输出口]，不猜
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        cfg = parse_h3_data(raw)
+        ch = (cfg or {}).get("chain") or {}
+        name = str(ch.get("name") or "").strip()
+        cid = str(ch.get("clip") or "").strip()
+        shot = str(ch.get("shot") or "").strip()
+        if name and not cid and shot:
+            # 提交编译主动清空 chain.clip（bz_prompt_build.js），后端只认 shot uid。
+            # 不补这一步会被误判成「裸跑」而跳过整轮收片（20261107 真机日志）。
+            try:
+                from .core.csglide_ticket import resolve_clip_id
+                cid = resolve_clip_id(name, "", shot, film_summary)
+            except Exception:
+                cid = ""
+        if name and cid:
+            return name, cid
+    return "", ""
+
+
 @chainlocked
 def collect_run(name, cid, prompt_id):
-    """按 prompt_id 从服务端历史中确认本次分段片，统一归档并写中央回执。"""
-    name = str(name or "").strip()
-    if not name:
-        raise ValueError("缺少片名")
-    cid = str(cid or "").strip()
+    """按 prompt_id 从服务端历史中确认本次分段片，统一归档并写中央回执。
+
+    身份口径（20261123 统一）：片名/段 id 以提交时冻结在历史图 h3_data 里的为准，
+    参数只作提示 —— 跑批中途切工程/改段号，片仍收进提交时那一段。提示与冻结身份
+    不一致时记警告不报错：自动收片多半已按冻结身份收对，报错反而挡住幂等短路。
+    """
+    hint_name = str(name or "").strip()
+    hint_cid = str(cid or "").strip()
     prompt_id = str(prompt_id or "").strip()
-    if not cid:
-        raise ValueError("缺少段落 id")
     if not prompt_id:
         raise ValueError("缺少 prompt_id")
+
+    # 先取历史再认身份：去重必须按冻结身份查回执，否则界面切了段之后
+    # 拿提示身份查不到回执，会把同一次运行再收一遍（还收错段）。
+    entry = _server_history_entry(prompt_id)
+    frozen_name, frozen_cid = _identity_from_history(entry) if entry else ("", "")
+    identity_warning = ""
+    if frozen_name and frozen_cid:
+        drift = []
+        if hint_name and hint_name != frozen_name:
+            drift.append("片名 %s→%s" % (hint_name, frozen_name))
+        if hint_cid and hint_cid != frozen_cid:
+            drift.append("段 id %s→%s" % (hint_cid, frozen_cid))
+        if drift:
+            identity_warning = ("界面当前身份与提交时不一致，已按提交时冻结身份收片（%s）"
+                                % "；".join(drift))
+            print("[H3 档案] ⚠ %s" % identity_warning)
+        name, cid = frozen_name, frozen_cid
+    else:
+        # 历史里认不出（外接 h3_data / 老历史缺字段）：退回提示身份，保持旧行为。
+        name, cid = hint_name, hint_cid
+    if not name:
+        raise ValueError("缺少片名")
+    if not cid:
+        raise ValueError("缺少段落 id")
 
     # ---- 幂等：同一个 prompt 只收一次 ----
     # 收片有两个独立的发起者，实测相隔 0.5~1s 前后脚到达：
@@ -1960,6 +2076,13 @@ def collect_run(name, cid, prompt_id):
     # 才落库**（见下方顺序），所以"有回执" ⟺ "这次已经收完"。失败的那次不会
     # 留回执，重试仍能走完整流程。
     _d = chain_dir(name)
+    if identity_warning:
+        try:
+            store.log_event(_d, "run_collect_identity", cid,
+                            {"prompt_id": prompt_id, "warning": identity_warning},
+                            "backend")
+        except Exception:
+            pass
     try:
         _prev = store.load_run_receipt(_d, prompt_id)
     except Exception:
@@ -1981,7 +2104,7 @@ def collect_run(name, cid, prompt_id):
             except Exception:
                 return str(pth)
 
-        return {
+        _dup = {
             "clip": load_clip(name, cid),
             "deduped": True,
             "receipt": {
@@ -1996,8 +2119,12 @@ def collect_run(name, cid, prompt_id):
                 "deduped": True,
             },
         }
+        if identity_warning:
+            _dup["identity_warning"] = identity_warning
+        return _dup
 
-    entry = _server_history_entry(prompt_id)
+    # entry 在上面认身份时已取过；历史被挤掉但提示身份有回执的重复收片
+    # 已在幂等短路里返回，走到这里必须有历史才能按拓扑归档。
     if entry is None:
         raise ValueError("服务端历史里没有本次 prompt：%s" % prompt_id)
     status = entry.get("status") or {}
@@ -2010,23 +2137,15 @@ def collect_run(name, cid, prompt_id):
             raise ValueError("本次 prompt 已被中断，不能收片")
         run_status = "partial"
 
+    graph = _history_graph(entry)
+    for spec in graph.values():
+        if (spec or {}).get("class_type") == "CSGlideCastCS":
+            raw = (spec.get("inputs") or {}).get("h3_data")
+            if isinstance(raw, str) and json.loads(raw).get("push_film_latent") is True:
+                raise ValueError("整片潜空间加工结果不能收为单段成片")
     chain_doc = load_chain(name) or {}
-    current = str(chain_doc.get("current") or "")
-    if current and current != cid:
-        # 20261107：档案里可能残留早先误新建的段，current 还指着它。
-        # 目标段确实属于本工程时，把 current 纠正回来再收片，别把整轮判死；
-        # 目标段根本不在 order 里才按原逻辑拒绝（那是真的身份错位）。
-        order = [str(c) for c in (chain_doc.get("order") or [])]
-        if str(cid) in order:
-            try:
-                set_current(name, str(cid))
-                print("[H3 档案] 收片前把 current 从 %s 纠正到 %s"
-                      % (current, cid))
-                current = str(cid)
-            except Exception as exc:
-                print("[H3 档案] current 纠正失败：%s" % exc)
-        if current != str(cid):
-            raise ValueError("当前段是 %s，不能把本次结果收给 %s" % (current, cid))
+    if cid not in [str(c) for c in (chain_doc.get("order") or [])]:
+        raise ValueError("本工程没有待收片段：%s" % cid)
 
     meta = load_clip(name, cid)
     if meta is None:
@@ -2089,7 +2208,12 @@ def collect_run(name, cid, prompt_id):
             raise ValueError("本次没有任何合并节点自报阶段（段 %s）。" % cid)
         stage = stage_order[-1]
     else:
-        if stage not in present:
+        # 单轨也认冻结身份（20261123）：本次只有一个合并节点自报阶段时收那一采，
+        # 跑批中途在时间轴切了阶段，不该把老片按新阶段入账或拒收。
+        # 多个阶段并存（老无组工作流同时跑了一二采）才退回当前选中阶段裁决。
+        if len(present) == 1:
+            stage = next(iter(present))
+        elif stage not in present:
             listed = "、".join(
                 "#%s %s（阶段 %s）" % (v.get("node"), v.get("filename"),
                                     _decl(v).get("bz_stage") or "未声明")
@@ -2103,7 +2227,10 @@ def collect_run(name, cid, prompt_id):
     declared = [present[s][0] for s in stage_order]
     segment = present[stage][0]
 
-    take = max(1, int(meta.get("current_take") or 1))
+    from .core.csglide_ticket import prompt_fingerprint
+    take = _take_for_fingerprint(meta, prompt_fingerprint(graph), any(
+        (s or {}).get("class_type") == "BanZhang_H3VAEDecodeFast" for s in graph.values()))
+    is_current_take = take == max(1, int(meta.get("current_take") or 1))
     # 20261111：按选中阶段校验对应的那份 cont（s1 仍是旧主档文件名）。
     cont_path = clip_cont(name, cid, take, stage)
     if not os.path.isfile(cont_path):
@@ -2170,14 +2297,14 @@ def collect_run(name, cid, prompt_id):
         "films": films,
     })
     for key in ("prompt_seg", "steps", "cfg", "refs"):
-        if key in meta:
+        if is_current_take and key in meta:
             rec[key] = meta[key]
     take_params[str(take)] = rec
     update_clip(name, cid, {"take_params": take_params})
 
     # 组模式收完自动把选中阶段切到最后出片的那采：监视器/时间轴/整片口
     # 都读 current_stage，切了立刻显示三采画面，不用手点。旧无组不自动切。
-    if group_mode and current_stage(name) != stage:
+    if group_mode and is_current_take and current_stage(name) != stage:
         try:
             set_stage(name, stage)
         except Exception as exc:
@@ -2218,7 +2345,7 @@ def collect_run(name, cid, prompt_id):
     show_path = film_pick(name, cid, take, stage, fallback=dest)
     out = set_film(name, cid, show_path, frames=frames,
                    head=_compute_film_head(clip_from, clip_to, frames,
-                                           head_trim=head_trim))
+                                           head_trim=head_trim)) if is_current_take else load_clip(name, cid)
 
     # 回执**只在收片完整成功之后**落库（20261023）。
     # 它是上面那段幂等短路的判据："有回执" 必须等价于 "这次已经收完"。
@@ -2252,7 +2379,10 @@ def collect_run(name, cid, prompt_id):
         "whole_film": whole_brief,
         "status": run_status,
     }
-    return {"clip": out, "receipt": receipt}
+    _res = {"clip": out, "receipt": receipt}
+    if identity_warning:
+        _res["identity_warning"] = identity_warning
+    return _res
 
 
 def _has_latent_on_disk(name, c):
@@ -2350,9 +2480,9 @@ def film_summary(name):
         # 单次 stat 在线程池路由里跑、film_summary 又有 0.8s TTL 压频，
         # N 段 N 次 stat 可接受。
         _film_on_disk = bool(_film_path) and os.path.isfile(_film_path)
-        if ff <= 0 and _film_on_disk:
+        if _film_on_disk and (ff <= 0 or _film_path != c.get("film")):
             ff = probe_film_frames(_film_path)
-            if ff > 0:
+            if ff > 0 and _film_path == c.get("film"):
                 try:
                     update_clip(name, c.get("id"), {"film_frames": ff})
                     c["film_frames"] = ff        # 本轮 summary 直接用上
@@ -3154,8 +3284,17 @@ def _join_film(jobs, picks, plan, out_fps):
                 res = {"ok": False, "why": "fast_exc", "detail": repr(exc)}
             if res.get("ok"):
                 want = int(plan["frames"])
-                got = int(res.get("frames") or 0)
-                if got == want:      # 帧口径裁帧后必须严丝合缝，差一帧都不收
+                # 帧数三态必须分开读：正整数=数出来了、0=确认是空片、None=数不出来。
+                # 旧写法 int(res.get("frames") or 0) 把后两种压成同一个 0。
+                got = res.get("frames")
+                got = None if got is None else int(got)
+                if got == 0:
+                    print("[H3 档案] ⚠ 整片重编码拼出 0 帧（确认是空片），不收下，"
+                          "退回无损拼接")
+                elif got is None:
+                    print("[H3 档案] ⚠ 整片重编码产物帧数读不出来（未知），"
+                          "不能当「严丝合缝」的证据，退回无损拼接")
+                elif got == want:      # 帧口径裁帧后必须严丝合缝，差一帧都不收
                     _replace_retry(tmp, plan["path"])
                     v_secs = float(res.get("video_seconds") or 0.0) or (
                         got / out_fps if out_fps else 0.0)
@@ -3174,8 +3313,12 @@ def _join_film(jobs, picks, plan, out_fps):
                             "encode": {"video": "libx264 crf17 veryfast"
                                                 "（整片一次重编码 + 接缝 4 帧平滑）",
                                        "audio": "aac 128k"}}
-                print("[H3 档案] ⚠ 整片重编码帧数对不上（%d/%d），退回无损拼接"
-                      % (got, want))
+                else:
+                    # 数出来了、只是与账面不等 —— 同样不收下，退回无损拼接。
+                    # 这条必须是 else：0 与 None 两个分支都落到这里来过一次，
+                    # 而 %d 遇到 None 会直接抛 TypeError。
+                    print("[H3 档案] ⚠ 整片重编码帧数对不上（%d/%d），退回无损拼接"
+                          % (got, want))
             else:
                 print("[H3 档案] 整片重编码没走成（%s），退回无损拼接：%s"
                       % (res.get("why"), res.get("detail") or ""))
@@ -3187,15 +3330,35 @@ def _join_film(jobs, picks, plan, out_fps):
                 except OSError:
                     pass
 
-    res = jp.concat_play_films(jobs, plan["path"])
-    if res.get("ok"):
+    # 这条路径过去把产物直接写在**正式成片路径**上，与本函数开头自述的契约
+    # （「先写 .part 临时文件、拼完再改名：中途失败不会留下半条片子冒充成片」）
+    # 相反。判据一旦改成拒绝，"拒绝"就同时意味着正式路径上已经躺着一个空文件 ——
+    # 所以先把写盘挪进临时文件，改名只发生在判据通过之后。
+    tmp2 = _tmp_out(plan["path"])
+    try:
+        res = jp.concat_play_films(jobs, tmp2)
+        if not res.get("ok"):
+            print("[H3 档案] 无损拼接没走成（%s），退回重编码：%s"
+                  % (res.get("why"), res.get("detail") or ""))
+            return None
         want = int(plan["frames"])
-        got = int(res.get("frames") or 0)
+        got = res.get("frames")
+        got = None if got is None else int(got)
+        if got == 0 or got is None:
+            # 空片 / 帧数读不出来：都不改名、都不碰正式成片路径，交给第三条逐帧
+            # 重编码 —— 那条是 decode 实数，不依赖容器记数，能给确定答案。
+            # 「未知」过去按账面净长放行，等于把「我数不出来」当成「产物没问题」，
+            # 而 header-only 的空片正是从这条缝里被报成导出成功的。
+            print("[H3 档案] ⚠ 无损拼接产物帧数%s（%s/%d），不收下，退回逐帧重编码"
+                  % ("确认是空片" if got == 0 else "读不出来",
+                     "0" if got == 0 else "未知", want))
+            return None
         a_secs = float(res.get("audio_seconds") or 0.0)
         v_secs = float(res.get("video_seconds") or 0.0)
+        _replace_retry(tmp2, plan["path"])
         print("[H3 档案] 保存成片（无损拼接）：%d 段 -> %s（%d/%d 帧 @ %.3f fps，"
               "流复制）" % (len(picks), plan["path"], got, want, out_fps))
-        if got and abs(got - want) > 1:
+        if abs(got - want) > 1:
             print("[H3 档案] ⚠ 成片帧数对不上时间轴：%d 帧 / 应为 %d 帧"
                   % (got, want))
         if v_secs and a_secs and abs(v_secs - a_secs) > 0.05:
@@ -3203,7 +3366,7 @@ def _join_film(jobs, picks, plan, out_fps):
                   % (v_secs, a_secs))
         return {"ok": True, "path": plan["path"], "file": plan["file"],
                 "frames": got,
-                "seconds": v_secs or (got / out_fps if out_fps else 0.0),
+                "seconds": v_secs or ((got / out_fps) if (got and out_fps) else 0.0),
                 "clips": len(picks), "at_index": plan["at_index"],
                 "audio": bool(a_secs), "audio_seconds": round(a_secs, 3),
                 "drift": round(abs(v_secs - a_secs), 3),
@@ -3211,9 +3374,12 @@ def _join_film(jobs, picks, plan, out_fps):
                 "lossless": True,
                 "encode": {"video": "copy（流复制 —— 拼接零损失）",
                             "audio": "copy（流复制 —— 拼接零损失）"}}
-    print("[H3 档案] 无损拼接没走成（%s），退回重编码：%s"
-          % (res.get("why"), res.get("detail") or ""))
-    return None
+    finally:
+        if os.path.isfile(tmp2):
+            try:
+                os.remove(tmp2)
+            except OSError:
+                pass
 
 
 def export_film(name, at=None):
@@ -3423,6 +3589,17 @@ def export_film(name, at=None):
 
             out.close()
             out = None
+            if vframe <= 0:
+                # 0 帧产物不收：改名过去就是一个空片子占住正式成片路径，而返回值
+                # 是 ok=True（桌面 0 字节成片的第三条来源）。
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                return {"ok": False, "blocker": "empty_film",
+                        "message": "拼出来 0 帧：各段按时间轴净长裁切后没有剩余画面 —— "
+                                   "多半是账面帧数比盘上成片长（该段还没跑够），"
+                                   "请先补齐这一段再导出"}
             os.replace(tmp_path, out_path)
         except Exception as e:
             if out is not None:
@@ -3474,12 +3651,17 @@ def preview_film(name, ensure=True):
     （段内容/顺序没变就复用，不重拼）。ensure=False 只读取当前缓存状态、不拼接。
     """
     fs = film_summary(name)
-    rows = [r for r in (fs.get("clips") or []) if r.get("playable")]
+    all_rows = fs.get("clips") or []
+    rows = [r for r in all_rows if r.get("playable")]
     fps = float(fs.get("fps") or FRAME_FPS) or float(FRAME_FPS)
     base = {"name": name, "fps": fps}
     if not rows:
         return dict(base, ok=False, blocker="no_film",
                     message="还没有可播放的段，先渲染一段。")
+    missing = [r for r in all_rows if r["index"] <= rows[-1]["index"] and not r.get("playable")]
+    if missing or fs.get("broken"):
+        return dict(base, ok=False, blocker="missing_clips",
+                    message="整片中间有缺失或损坏的段，不能跳过它们拼接；请先补齐成片。")
     frames_total = int(rows[-1]["clip_to"])
     # 签名：参与段的 身份/版本/净长/源片 + 顺序，任一变化即失效重拼。
     # pv3：裁帧改帧口径（旧缓存是秒口径拼的，会少几帧），必须失效重拼一次。
@@ -3530,6 +3712,14 @@ def preview_film(name, ensure=True):
     if not res.get("ok"):
         return dict(base, ok=False, blocker="concat_failed",
                     why=res.get("why"), detail=res.get("detail"))
+    _fr = res.get("frames")
+    if _fr is not None and int(_fr) <= 0:
+        # 确认 0 帧（数不出来是 None，不走这条）：既不回 ok，也**不写签名缓存** ——
+        # 写了下次就命中 cached 分支，把这条空预览一直当真值供下去。
+        # 判据不许写成 `int(res.get("frames") or -1)`：0 是假值，会被 or 吃掉，
+        # 这条拒绝分支就永远命中不了 —— 正是这次要消灭的那个写法。
+        return dict(base, ok=False, blocker="empty_film", frames=0,
+                    path=out, clips=len(rows))
     try:
         with open(side, "w", encoding="utf-8") as fh:
             fh.write(sig)
@@ -3765,8 +3955,47 @@ def _rewrite_json_paths(dirpath, pairs):
     return n
 
 
+def _restore_video_segment(name, snapshot):
+    """只更新新片中本次出片的段，保留复制过来的成片、续拍档和其他段。"""
+    state = dict(snapshot["state"])
+    identity = state["chain"]
+    shot = str(identity.get("shot") or "")
+    order = load_chain(name).get("order") or []
+    cid = next((c for c in order if shot and (load_clip(name, c) or {}).get("shot") == shot), None)
+    if not cid and not shot and identity.get("clip") in order:
+        cid = identity["clip"]
+    if not cid:
+        cid = add_clip(name, shot=shot, frames=int(state.get("length") or 124))
+    state["chain"] = dict(identity, name=name, clip=cid)
+    patch = {"state": state}
+    if state.get("length"):
+        patch["frames"] = int(state["length"])
+    text = snapshot.get("text")
+    if isinstance(text, str):
+        patch["prompt_seg"] = state["prompt"] = text
+    update_clip(name, cid, patch)
+    d = chain_dir(name)
+    if store.has_db(d):
+        if isinstance(snapshot.get("rack"), dict):
+            store.save_rack(d, cid, snapshot["rack"])
+        desk = store.load_desk(d) or {}
+        desk["chain"] = state["chain"]
+        for key in ("global", "alias"):
+            if key in snapshot:
+                desk[key] = snapshot[key]
+        if isinstance(text, str):
+            desk.setdefault("segs", {})[cid] = text
+        store.save_desk(d, desk)
+        if isinstance(text, str):
+            result = store.put_segment_text(d, cid, text, allow_empty=True, desk=desk)
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "还原段词失败")
+        store.sync_segment_binding(d, cid)
+    set_current(name, cid)
+
+
 @chainlocked
-def copy_chain(name, new_name):
+def copy_chain(name, new_name, snapshot=None):
     """把一条片子的**整份档案**复制到一个新片名下（拖入视频还原，20261107）。
 
     与 rename_chain 恰好相反：那个只改索引、目录一个字节都不动；这个真复制出
@@ -3800,7 +4029,8 @@ def copy_chain(name, new_name):
     if src_name == dst_name:
         return {"copied": False, "code": "same", "reason": "新旧片名一样"}
     src = chain_dir(src_name)
-    if not os.path.isdir(src):
+    source_exists = os.path.isdir(src)
+    if not source_exists and not snapshot:
         # 没有档案可复制（视频来自别的机器 / 原片已被删）：由调用方退回
         # 「至少一段」，这里如实报告，不要造一个空档案冒充成功。
         return {"copied": False, "code": "no_src",
@@ -3814,10 +4044,14 @@ def copy_chain(name, new_name):
 
     try:
         # 除库文件外一律照拷（含子目录）：段落 json、各版本 mp4、cont、波形全在里面。
-        shutil.copytree(src, dst,
-                        ignore=shutil.ignore_patterns("project.db*", "_preview.*"))
-        # 库单独走 SQLite 备份：WAL 里没 checkpoint 的写入也带上（理由见 store.copy_db）。
-        store.copy_db(src, dst)
+        if source_exists:
+            shutil.copytree(src, dst,
+                            ignore=shutil.ignore_patterns("project.db*", "_preview.*"))
+            store.copy_db(src, dst)
+        else:
+            os.makedirs(dst)
+        if snapshot:
+            _restore_video_segment(dst_name, snapshot)
     except Exception as e:
         # 半截档案比没有更糟（时间轴上会出现打不开的段）：整目录清掉，让用户重来。
         try:
@@ -3854,7 +4088,7 @@ def copy_chain(name, new_name):
         seg_n = len([x for x in (load_chain(dst_name).get("order") or []) if x])
     except Exception:
         seg_n = 0
-    return {"copied": True, "from": src_name, "to": dst_name,
+    return {"copied": True, "source_archive": source_exists, "from": src_name, "to": dst_name,
             "dir": os.path.basename(dst), "sizeMB": _dir_size_mb(dst),
             "segments": seg_n, "json_rewritten": repathed}
 
@@ -4410,8 +4644,8 @@ try:
                 take = int(meta.get("current_take") or 1)
             except (TypeError, ValueError):
                 take = 1
-            p = clip_cont(name, cid, take)
-            if not os.path.isfile(p):
+            p = clip_continuation_resolve(name, cid)
+            if not p:
                 return {"error": "这一段还没有续拍存档 —— 先跑一次这一段"}
             return {"cid": cid, "take": take,
                     "cont_path": os.path.relpath(
@@ -4472,7 +4706,7 @@ try:
             return _json({"copied": False, "code": "bad_name",
                           "error": "缺少片名"}, 400)
         try:
-            return _json(await _io(copy_chain, src, dst))
+            return _json(await _io(copy_chain, src, dst, body.get("snapshot")))
         except Exception as e:
             return _json({"copied": False, "code": "error",
                           "error": "%s: %s" % (type(e).__name__, e)}, 500)
@@ -4654,16 +4888,11 @@ try:
         res = await loop.run_in_executor(None, preview_film, name, ensure)
         return _json(res)
 
-    @PromptServer.instance.routes.get("/cglide/chain/prewarm")
-    async def _route_prewarm_get(request):
-        """后台预热整片预览片（GET 便捷入口，立即返回、不等待拼接）。"""
-        name = str(request.query.get("name") or "").strip()
-        if not name:
-            return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
-        was = name in _prewarm_running
-        schedule_prewarm(name)
-        return _json({"ok": True, "already_running": was})
-
+    # GET /cglide/chain/prewarm 已于 20261119 删除：它与下面的 POST 同路径、
+    # 逻辑完全等价（都是 schedule_prewarm + 同名去重），是全仓扫描查出的同路径
+    # 双 method 冲突之一。按「一路径一 method」铁律清掉（根因见 _route_board_get
+    # 上方注释）。删除前确认过：全仓 js/py/md/templates 没有任何调用方，只有
+    # 前端在渲染完成后 fire-and-forget 走 POST。别再给它加回 GET 便捷入口。
     @PromptServer.instance.routes.post("/cglide/chain/prewarm")
     async def _route_prewarm(request):
         """后台预热整片预览片：立即返回、不等待拼接（同名在跑去重）。
@@ -4810,13 +5039,11 @@ try:
             body = await request.json()
         except Exception:
             return _json({"error": "请求体不是 JSON"}, 400)
+        # name/id 只作提示（20261123 身份统一）：collect_run 以历史图里
+        # 提交时冻结的身份为准，提示缺失或不一致都能收对地方。
         name = str(body.get("name") or "").strip()
-        if not name:
-            return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
         cid = body.get("id")
         prompt_id = body.get("prompt_id")
-        if not cid:
-            return _json({"error": "缺少段落 id"}, 400)
         if not prompt_id:
             return _json({"error": "缺少 prompt_id"}, 400)
         try:
@@ -4917,6 +5144,15 @@ try:
             return _json({"error": str(exc)}, 400)
         return _json(out)
 
+    # 一路径一 method（20261119 铁律，见 _selftest_routes.py）：
+    # ComfyUI-LG_HotReload 重载插件时按**路径**替换 handler、不看 method
+    # （其 __init__.py:339-351：内层 for route_obj in resource 对该路径下每个
+    # method 的 _handler 一律赋值），所以同一路径挂 GET+POST 时，后注册的那个
+    # method 会通吃所有 method —— GET 落进 POST 的处理器，回「请求体不是 JSON」，
+    # 分镜锚于是永远读不回来（表现＝刷新 / 切工程后图片轴空）。aiohttp 本身支持
+    # 同路径多 method，是那个插件不遵守；本包改不了它，就守自己的规矩：
+    # 读 /cglide/chain/board，写 /cglide/chain/board_set。与既有
+    # /film + /set_film、/film_summary 同风格。
     @PromptServer.instance.routes.get("/cglide/chain/board")
     async def _route_board_get(request):
         """读分镜轨锚表（时间轴图片锚）。"""
@@ -4925,9 +5161,13 @@ try:
             return _json({"error": "缺少片名"}, 400)
         return _json({"board": await _io(board_of, name)})
 
-    @PromptServer.instance.routes.post("/cglide/chain/board")
+    @PromptServer.instance.routes.post("/cglide/chain/board_set")
     async def _route_board_post(request):
-        """整表覆写分镜锚：拖入 / 拖动 / 删除都走这里，后端补 mtime 并校验。"""
+        """整表覆写分镜锚：拖入 / 拖动 / 删除都走这里，后端补 mtime 并校验。
+
+        回 `丢弃` 明细：整表覆写口径下，被丢掉的那几张就是被删掉的那几条锚，
+        不能静默（见 board_set 文档串）。
+        """
         try:
             body = await request.json()
         except Exception:
@@ -4936,10 +5176,10 @@ try:
         if not name:
             return _json({"error": "缺少片名：请求没带 name，已停止，不读写任何档案"}, 400)
         try:
-            saved = await _io(board_set, name, body.get("entries") or [])
+            saved, dropped = await _io(board_set, name, body.get("entries") or [])
         except ValueError as exc:
             return _json({"error": str(exc)}, 400)
-        return _json({"board": saved})
+        return _json({"board": saved, "丢弃": dropped})
 
     @PromptServer.instance.routes.post("/cglide/chain/lock")
     async def _route_lock(request):

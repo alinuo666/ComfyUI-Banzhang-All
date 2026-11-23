@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { restoreVideoWorkflow } from "./bz_video_snapshot.js";
 import { api } from "../../scripts/api.js";
 /* 这两个本文件自己已经不用了（搬去 csglide_cast_slots.js 了），但**必须留着**：
    csglide_qwen.js 与 csglide_media_rack.js 至今还是从本文件取它们的
@@ -250,6 +251,9 @@ function buildUI(node) {
       api.removeEventListener("executing", ui.onExecuting);
       /* 拓扑分区：graph 钩子实例与运行事件监听一并摘掉，热重建不重复订阅 */
       try { ui.stageFlowDestroy?.(); } catch { /* 已清理 */ }
+      /* 阶段是档案的投影：这条订阅也要一并摘，否则热重建叠订阅、
+         且 bz_store 里留着已删节点的闭包 */
+      try { ui.stageSyncDestroy?.(); } catch { /* 已清理 */ }
       /* 内置逐帧预览：热重建 rebuildCastUI 会先 destroy 再 buildUI，
          不注销会重复订阅；Blob URL 也要一并回收。 */
       if (ui.onH3Preview) api.removeEventListener("minimax_h3_preview_override", ui.onH3Preview);
@@ -395,6 +399,26 @@ function hideCastAutoPortsDOM(node) {
 
 app.registerExtension({
   name: "cglide.glidecast",
+  setup() {
+    const handle = app.handleFile.bind(app);
+    app.handleFile = async function (file, openSource, options) {
+      const parse = window.comfyAPI?.parser?.getWorkflowDataFromFile;
+      if (parse && /\.(mp4|mov|m4v|webm|mkv)$/i.test(file?.name || "")) {
+        let graph, prompt;
+        try {
+          const data = await parse(file);
+          graph = typeof data?.workflow === "string" ? JSON.parse(data.workflow) : data?.workflow;
+          prompt = typeof data?.prompt === "string" ? JSON.parse(data.prompt) : data?.prompt;
+        } catch { /* 普通视频和旧格式继续走前端原有导入路径 */ }
+        if (restoreVideoWorkflow(graph, prompt, file.name)) {
+          return app.loadGraphData(graph, true, true, file.name.replace(/\.\w+$/, ""), {
+            openSource, deferWarnings: options?.deferWarnings
+          });
+        }
+      }
+      return handle(file, openSource, options);
+    };
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_ID) return;
     injectCSS();
@@ -650,10 +674,13 @@ app.registerExtension({
       /* 视频还原出来的这一页要先换成独立片名，再让工程库回灌：否则库按旧
          片名把现场盖成「现在的值」，而且这一页的写回会污染原工程。改名是
          异步的，所以把 boot 延后到它完成，不是靠抢时间窗。 */
-      const dropped = consumeVideoDrop();
+      const dropName = consumeVideoDrop();
+      const snapshot = this.properties?.bz_video_restore;
+      if (snapshot) delete this.properties.bz_video_restore;
+      const dropped = snapshot?.fileName || dropName;
       if (dropped && typeof this.h3ui?.restoreVideoAsNewProject === "function") {
         let task = null;
-        try { task = this.h3ui.restoreVideoAsNewProject(dropped); }
+        try { task = this.h3ui.restoreVideoAsNewProject(dropped, snapshot); }
         catch (e) { console.warn("[H3 Studio] 视频现场还原失败", e); }
         if (task && typeof task.then === "function") task.then(boot, boot);
         else boot();

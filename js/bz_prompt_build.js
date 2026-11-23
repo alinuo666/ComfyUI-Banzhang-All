@@ -426,6 +426,16 @@ function defClaimsOf(text, rack, nameElsewhere) {
     else claim = e.defined || "";
     if (!claim || DEF_DESC.test(claim)) continue;   // 纯描述句：不算断言
 
+    const quoted = /^[「『“"'](.+)[」』”"']$/.exec(claim);
+    if (quoted) claim = quoted[1];
+    let el = null;
+    try { el = typeof nameElsewhere === "function" ? nameElsewhere(claim) : null; }
+    catch (_) { /* 跨段名称暂不可读 */ }
+    // 未加引号的中文定义也可能是场景说明。只有架上已有同名素材，才能据此对账；
+    // 明确的素材编号、引号内名字仍可报告缺失，不能凭描述要求导入同名文件。
+    if (!PURE_ID.test(claim) && !quoted && !el
+        && !imgs.some((slot) => sameName(claim, slotLabel(slot)))) continue;
+
     const actual = slotLabel(imgs[i]);
     const tok = "@图片" + (i + 1);
     claims.push({ tok, idx: i, claim, actual });
@@ -444,9 +454,6 @@ function defClaimsOf(text, rack, nameElsewhere) {
       continue;
     }
     /* 二档：本段没有 —— 那**别的段**有没有？有就说明素材在，只是没摆到这一段。 */
-    let el = null;
-    try { el = typeof nameElsewhere === "function" ? nameElsewhere(claim) : null; }
-    catch (_) { el = null; }
     problems.push({ kind: "missing", tok, idx: i, claim, actual,
                     elsewhere: el && el.cid ? { cid: el.cid, idx: el.idx } : null });
   }
@@ -599,7 +606,7 @@ class PromptBuilder {
    * ---------------------------------------------------------------
    * cid 为空（新段还没登记）时退化为"当前段" —— 这是唯一允许的退化，
    * 因为此时不存在"另一个段"可以串。 */
-  resolve(castNode, cid, idxHint) {
+  resolve(castNode, cid, idxHint, primedWords) {
     const h3 = (castNode && castNode.h3ui) || null;
     if (!h3) throw new Error("导演台面板还没就绪（h3ui 缺失）—— 等一下再试");
 
@@ -651,7 +658,7 @@ class PromptBuilder {
         if (rack) rackSrc = "rack.segs";
       }
     } catch (_) { /* 媒体架节点不在 / 旧实例：走下面的兜底 */ }
-    if ((!rack || !rackHasFile(rack)) && shot.rack && rackHasFile(shot.rack)) {
+    if (!rack && shot.rack && rackHasFile(shot.rack)) {
       rack = clone(shot.rack);
       rackSrc = "shot.rack";
     }
@@ -675,7 +682,7 @@ class PromptBuilder {
         alias = snap.alias === true;
       }
     }
-    const primed = this._libWords.get(cid);
+    const primed = primedWords || null;
     if (primed) {
       deskHasKey = !!primed.has;
       deskWords = String(primed.text || "");
@@ -708,13 +715,9 @@ class PromptBuilder {
         && typeof dnode.deskUI.snapshot === "function") {
       const snap = dnode.deskUI.snapshot();
       const segs = (snap && snap.segs) || {};
-      const curK = String((snap && snap.curKey) || "");
-      let t = (curK && Object.prototype.hasOwnProperty.call(segs, curK))
-        ? String(segs[curK] || "") : "";
-      if (!t) {
-        const tmp = Object.keys(segs).find((x) => x.startsWith("__new__"));
-        if (tmp) t = String(segs[tmp] || "");
-      }
+      const tempKey = "__new__" + String(shot.id || "?");
+      let t = Object.prototype.hasOwnProperty.call(segs, tempKey)
+        ? String(segs[tempKey] || "") : "";
       if (!t && castNode && castNode._bzVideoSnap) {
         /* 还原态把段 id 清空了（B1 不带旧档案），词仍按原 clip 键留在段表里。 */
         const real = Object.keys(segs).find((x) => /^clip_/i.test(x));
@@ -907,11 +910,11 @@ class PromptBuilder {
    * ---------------------------------------------------------------
    * 只写三个 *_data 输入。图骨架里的其它东西（模型、尺寸、采样、静音）
    * 是全片共享的，本来就该来自画布。 */
-  apply(prompt, castNode, cid) {
+  apply(prompt, castNode, cid, primedWords) {
     const out = prompt && prompt.output;
     if (!out) throw new Error("提交对象里没有 output（graphToPrompt 失败）");
 
-    const seg = this.resolve(castNode, cid);
+    const seg = this.resolve(castNode, cid, undefined, primedWords);
     const rec = this.checkDup(this.receiptOf(seg));
     const patched = [];
     const missing = [];
@@ -955,13 +958,13 @@ class PromptBuilder {
        跨工程安全由那一层保证），提交时再抹一次是多余且有害的。
        cid 为空 = 真正未登记的新段，后端仍按原逻辑自登记。 */
     h3Submit.chain = { ...(h3Submit.chain || {}), clip: String(cid || "") };
+    delete h3Submit.run_result;  // 界面历史结果不参与本次生成，也不能随提交反复回灌。
     /* 组模式收片要靠 h3_data.stage_flow 判「本次启用/出片了哪几采」。
        seg.state 克隆不一定带它，这里从拓扑区唯一真值 collectStageFlow 补写，
        保证画布单跑与全部渲染两条路径交出去的 h3_data 都带阶段名单。 */
     const _sfFn = castNode.h3ui && castNode.h3ui.collectStageFlow;
     if (typeof _sfFn === "function") {
-      const _sf = _sfFn();
-      if (_sf) h3Submit.stage_flow = _sf;
+      h3Submit.stage_flow = _sfFn();
     }
     castEntry.inputs.h3_data = JSON.stringify(h3Submit);
     patched.push("h3");
@@ -1033,7 +1036,7 @@ class PromptBuilder {
 
   /* 按节点 id 定位提交对象那一项；找不到按 class_type 回退。 */
   _entry(out, node, classType) {
-    if (node && out[String(node.id)]) return out[String(node.id)];
+    if (node) return out[String(node.id)] || null;
     if (classType) {
       for (const k of Object.keys(out)) {
         const e = out[k];
@@ -1049,7 +1052,7 @@ class PromptBuilder {
     /* 期一：先把本段词**写穿**再按 cid **读库**，填好 prime 缓存；
        下面 apply → resolve 就会用库值，而不是文案台的内存副本。 */
     await this.primeDesk(castNode, cid);
-    const built = this.apply(p, castNode, cid);
+    const built = this.apply(p, castNode, cid, this._libWords.get(String(cid || "")));
     /* 20261107：全部渲染走的是 compile 而不是直接 apply。这里在编译出口
        再钉一次 chain.clip，无论中途哪一层动过 h3_data，交出去的一定带本段
        真实 cid；同时留一条可验证的控制台标记，刷新后跑一次就能确认新版已生效。 */

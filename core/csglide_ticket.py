@@ -46,10 +46,28 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
 
 
+def _strip_runtime_keys(prompt: Any) -> Any:
+    """剥掉执行器在节点字典上原地追加的运行时键，只留提交时的字面图。
+
+    ComfyUI 执行器开跑时给每个带 IS_CHANGED 的节点写 ``is_changed``（execution.py
+    的 IsChangedCache），写档方拿到的 hidden.prompt 是**带标记的活图**；而历史
+    （PromptQueue.task_done）存的是**执行前一刻的深拷贝**，没有标记。两侧若直接
+    对整图哈希，同一份提交也会算出两个指纹，认版守卫永远拒收（20261123 真机：
+    视频出了、潜空间档写了，自动收片却报「没有对应的潜空间版本」）。
+    这里与成片嵌入元数据 ``_video_prompt_json`` 同一套净化：哈希前剥 is_changed，
+    写档方与收片方都归一到提交时的干净图，指纹必然相等。
+    """
+    if not isinstance(prompt, dict):
+        return prompt
+    return {nid: ({k: v for k, v in entry.items() if k != "is_changed"}
+                  if isinstance(entry, dict) else entry)
+            for nid, entry in prompt.items()}
+
+
 def prompt_fingerprint(prompt: Any) -> str:
     if not isinstance(prompt, dict) or not prompt:
         raise TicketError("hidden.prompt 未注入或为空：请确认节点声明了 hidden PROMPT")
-    return digest(prompt)
+    return digest(_strip_runtime_keys(prompt))
 
 
 @dataclass(frozen=True)
@@ -264,7 +282,17 @@ def decode_stage(prompt, node_id, max_hops=16):
                 upscales.add(nid)   # 记数但继续往上：三采要数到第二个放大
             if cls in CAST_TYPES:
                 # 导演台是 latent 源头：按输出口序号取基阶段，不必再往上。
-                base = max(base, CAST_PORT_BASE.get(out_idx, 0))
+                port_base = CAST_PORT_BASE.get(out_idx, 0)
+                if out_idx == 12:
+                    try:
+                        from .csglide_stage_bus import downstream_latent_stage
+                        raw = (up.get("inputs") or {}).get("h3_data") or "{}"
+                        data = json.loads(raw) if isinstance(raw, str) else raw
+                        stage = downstream_latent_stage(data.get("stage_flow"))
+                        port_base = max(0, int(stage[1:]) - 1) if stage else 0
+                    except (ValueError, TypeError, AttributeError):
+                        port_base = 0
+                base = max(base, port_base)
                 continue
             for value in (up.get("inputs") or {}).values():
                 if isinstance(value, (list, tuple)) and len(value) == 2:

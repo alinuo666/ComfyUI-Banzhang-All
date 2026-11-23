@@ -2,7 +2,7 @@
 """🪞 人脸修复台（BanZhang_FaceFixStudio）—— 像素域成片后处理节点。
 
 定位：放在三采之后、合成出片之前，吃解码后的像素帧，吐修好的帧。
-SAM3.1 检测追踪所有人脸 → 每帧脸框并成主体遮罩 → MaskVid 线性规划器
+SAM3.1 检测追踪所有人脸 → 保留逐帧分割并集遮罩 → MaskVid 线性规划器
 整段联合求解恒定尺寸裁剪框（遮罩抖动/丢帧/遮挡框不动，持续运动才最小
 移动）→ 裁剪序列放大到目标像素量 → H3 低降噪重渲染 → 按脸区遮罩羽化贴回。
 
@@ -41,9 +41,9 @@ class BanZhang_FaceFixStudio:
                 # SAM3.1 的文本编码器（同一 CheckpointLoaderSimple 的 CLIP 口）
                 "sam3_clip": ("CLIP",),
                 # 人脸提示词，前端面板里直接可改
-                "sam3_prompt": ("STRING", {"default": "face", "multiline": False}),
-                # 检测阈值：低=检出更多（含误检），高=更严
-                "sam3_threshold": ("FLOAT", {"default": 0.35, "min": 0.05,
+                "sam3_prompt": ("STRING", {"default": "human face", "multiline": False}),
+                # 检测阈值：低=检出更多（含误检），高=更严；0.5 是 SAM3 官方默认
+                "sam3_threshold": ("FLOAT", {"default": 0.5, "min": 0.05,
                                              "max": 0.95, "step": 0.05}),
                 # 裁剪模式（面板收起，默认恒尺寸跟随）：
                 # 静止大框 = 一个框包住所有人脸全程运动，最稳；
@@ -54,19 +54,30 @@ class BanZhang_FaceFixStudio:
                 # 包边比例：裁剪框相对人脸并集大小的倍数，1.4 = 人脸占框约七成
                 "包边比例": ("FLOAT", {"default": 1.4, "min": 1.0, "max": 3.0,
                                        "step": 0.05}),
-                # 裁剪序列放大到约多少百万像素再采样（0 = 只对齐网格不放大）
-                "放大百万像素": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 16.0,
+                # 裁剪序列放大到约多少百万像素再采样（0 = 只对齐网格不放大）。
+                # 默认 0.5：这是耗时主导项——采样步时与它基本成正比。2026-11-21
+                # 实测 362 帧成片，1.0MP（裁剪 1376x752）时 68.9 秒/步、本节点 10分14秒；
+                # 主画布整幅只有 0.34MP（768x448）＝ 24~29 秒/步。0.5 约为主画布
+                # 1.5 倍，脸区细节仍远高于原生裁剪，总耗时降到约 6 分钟。
+                "放大百万像素": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 16.0,
                                            "step": 0.05}),
                 # 渲染步数
-                "steps": ("INT", {"default": 6, "min": 1, "max": 30, "step": 1}),
-                # 渲染降噪。低频（几何/身份/嘴型）由原帧 latent 保留区锁死，
+                "steps": ("INT", {"default": 4, "min": 1, "max": 30, "step": 1}),
+                # 渲染降噪。遮罩外由原帧 latent 保留；脸区重绘仍可能改变身份，
                 # 降噪只决定重渲染贡献多少细节：0.25~0.35 = 稳健修脸；
                 # 0.5 以上高频伪影风险增大（画布条件已剥，无空间锚）。
                 "denoise": ("FLOAT", {"default": 0.30, "min": 0.05, "max": 1.0,
                                       "step": 0.05}),
                 # 贴回羽化（像素）：越大与周围融合越软
-                "feather": ("INT", {"default": 24, "min": 0, "max": 64, "step": 4}),
+                "feather": ("INT", {"default": 8, "min": 0, "max": 64, "step": 4}),
             },
+            # 面板要收自己的事件（进度字幕 / 逐步动画 / 成片循环），得知道发给
+            # 哪个节点。hidden 既不生成 widget 也不生成端口，对旧存档完全安全。
+            "optional": {
+                "crop_padding": ("INT", {"default": -1, "min": -1, "max": 512, "step": 1}),
+                "crop_long_edge": ("INT", {"default": -1, "min": -1, "max": 4096, "step": 16}),
+            },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
@@ -75,13 +86,10 @@ class BanZhang_FaceFixStudio:
     CATEGORY = "👨‍🏫班长/人脸修复"
     OUTPUT_NODE = True
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
     def run(self, project_data, frames, model, positive, vae,
             sam3_model, sam3_clip, sam3_prompt, sam3_threshold,
-            裁剪模式, 包边比例, 放大百万像素, steps, denoise, feather):
+            裁剪模式, 包边比例, 放大百万像素, steps, denoise, feather,
+            unique_id=None, crop_padding=None, crop_long_edge=None):
         try:
             project = json.loads(project_data) if str(project_data).strip() else {}
         except Exception:
@@ -95,7 +103,11 @@ class BanZhang_FaceFixStudio:
             sam3_model=sam3_model, sam3_clip=sam3_clip,
             sam3_prompt=sam3_prompt, sam3_threshold=sam3_threshold,
             crop_mode=裁剪模式, crop_scale=包边比例, megapixels=放大百万像素,
-            steps=steps, denoise=denoise, feather=feather)
+            steps=steps, denoise=denoise, feather=feather,
+            node_id=unique_id,
+            # 循环动画的回放速度按成片真实帧率算；一采 VideoCombine 就是 24 帧/秒
+            # （362 帧 ≈ 15.1 秒）。改这里不影响画质，只影响预览循环快慢。
+            fps=24.0, crop_padding=crop_padding, crop_long_edge=crop_long_edge)
         report = info.get("report", "")
 
         # 前端人脸缩略图：修复前（原帧裁）与修复后（精修结果裁）
@@ -110,6 +122,9 @@ class BanZhang_FaceFixStudio:
         ]
         project["backend"] = info.get("backend", "none")
         project["last_report"] = report
+        # [明细不进面板] 参数/规划简报/逐行日志只随工程 JSON 走：面板底部只显示
+        # report 那一行结论（前端按「｜」拆行直显），要排查就接「工程JSON」输出口。
+        project["last_detail"] = info.get("detail", "")
         full_json = json.dumps(project, ensure_ascii=False)
 
         return {

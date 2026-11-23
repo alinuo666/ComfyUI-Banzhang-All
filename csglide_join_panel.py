@@ -268,18 +268,38 @@ def _build_play_film(src: str, fps: float, trim: int, take: int = 0) -> str:
     return dst
 
 
-def _count_frames(path: str) -> int:
+def _count_frames(path: str):
+    """实测帧数。返回 int = 数出来了（0 表示**确认是空片**）；返回 None = 数不出来
+    （未知）。两者不许混：调用方要靠 None 只给警告、靠 0 直接拒绝。
+
+    上一版在 PyAV 缺失、文件打不开、容器没记 duration 这三种「我不知道」的情况下
+    都 return 0，于是「数不出来」和「确认空片」共用一个值；叠上 _join_film 里
+    `if got and abs(got - want) > 1` 的 got=0 短路，0 字节的空片子会一路报
+    「导出成功」，桌面上就留下一个冒充成片的空文件（20261123）。"""
     if av is None:
-        return 0
+        return None
+    try:
+        if os.path.getsize(path) <= 0:
+            return 0        # 0 字节是**确认空片**，不是「读不出来」，必须能拒绝
+    except OSError:
+        return None
     try:
         with av.open(path) as c:
             v = c.streams.video[0]
             n = int(getattr(v, "frames", 0) or 0)
-            if not n and getattr(c, "duration", None):
-                n = int(round(float(c.duration) / 1_000_000.0 * _fps_of(v)))
-            return n
+            if n > 0:
+                return n
+            # mp4 经常不记 stream.frames：退回容器时长换算。
+            dur = getattr(c, "duration", None)
+            if dur:
+                return int(round(float(dur) / 1_000_000.0 * _fps_of(v)))
+            # 帧数和时长都记不出时，别急着报「未知」：demux 数一遍视频包（不解码，
+            # 开销极小）。0 个包 = 只有 header 的空片，必须回 0 让调用方拒绝 ——
+            # 否则「header-only 空片」会被算成未知，而未知是按账面放行的，
+            # 桌面 0 字节成片就是这么被报成「导出成功」的。
+            return sum(1 for p in c.demux(v) if p.size)
     except Exception:
-        return 0
+        return None
 
 
 def _build_and_count(src: str, fps: float, trim: int, take: int = 0):

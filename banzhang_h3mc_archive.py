@@ -29,6 +29,7 @@
 """
 
 import os
+import json
 import threading
 import time
 
@@ -188,6 +189,12 @@ def mirror_to_central(latent, prompt=None, unique_id=None, stage=None):
                    for v in graph.values())
     if not has_cast:
         return None        # 不带导演台的普通工作流：不该让它连解码都用不了
+    for spec in graph.values():
+        if not isinstance(spec, dict) or spec.get("class_type") not in CAST_TYPES:
+            continue
+        raw = (spec.get("inputs") or {}).get("h3_data")
+        if isinstance(raw, str) and json.loads(raw).get("push_film_latent") is True:
+            return None    # 整片加工不属于当前单段，禁止覆盖该段的 take 和潜空间档。
 
     name, cid, ticket = _ticket_identity(prompt, unique_id)
     if not name or not cid:
@@ -220,10 +227,18 @@ def mirror_to_central(latent, prompt=None, unique_id=None, stage=None):
     stages = dict(rec.get("stages") or {})
     stages[stage] = path
     rec["stages"] = stages
+    fingerprints = list(rec.get("run_fingerprints") or [])
+    previous_fingerprint = rec.get("run_fingerprint")
+    if previous_fingerprint and previous_fingerprint not in fingerprints:
+        fingerprints.append(previous_fingerprint)
+    if run_key not in fingerprints:
+        fingerprints.append(run_key)
     rec["run_fingerprint"] = run_key
+    rec["run_fingerprints"] = fingerprints
     rec["cont_saved_of"] = str(cid)
-    # 承接窗口跟随时间轴当前选中阶段（冲突 2=A / Q6=A）；默认 s1 主档。
-    rec["cont_saved"] = chain.clip_cont(name, cid, take, chain.current_stage(name))
+    # 选中阶段有真实 latent 就用它；视频阶段不产 latent，改记本次刚写出的档。
+    selected = stages.get(chain.current_stage(name))
+    rec["cont_saved"] = selected if selected and os.path.isfile(selected) else path
     tp[str(take)] = rec
     chain.update_clip(name, cid, {
         "takes": takes, "current_take": take,

@@ -30,6 +30,7 @@ const TTL_MS = 1200;
 const TTL_FALLBACK_MS = 4000;
 const _cache = new Map();      // "name::cid" -> { at, data }
 const _inflight = new Map();
+const _epochs = new Map();
 /* 段词**版本号**（A+ 方案的乐观锁）："name::cid" -> 最后一次从中央看到的 rev。
    写的时候把它当 base_rev 带上去；中央对不上就回 409 + 中央真值，前端据此
    刷新自己的内存 —— **绝不再拿过期的副本往前盖**。
@@ -113,12 +114,17 @@ export function setSegRev(name, cid, rev) {
 export function invalidateSeg(name, cid) {
   const pre = String(name || "") + "::";
   if (!cid) {
-    for (const k of Array.from(_cache.keys())) {
-      if (k.startsWith(pre)) _cache.delete(k);
+    for (const k of new Set([..._cache.keys(), ..._inflight.keys()])) {
+      if (k.startsWith(pre)) {
+        _cache.delete(k);
+        _epochs.set(k, (_epochs.get(k) || 0) + 1);
+      }
     }
     return;
   }
-  _cache.delete(ck(name, cid));
+  const k = ck(name, cid);
+  _cache.delete(k);
+  _epochs.set(k, (_epochs.get(k) || 0) + 1);
 }
 
 /**
@@ -141,7 +147,8 @@ async function pullViaProject(name, cid) {
     cid: String(cid),
     shot_uid: String((clip && clip.shot) || ""),
     state: (clip && clip.state) || {},
-    rack: normRack(rk),
+    rack: rk ? normRack(rk) : null,
+    rack_present: !!rk,
     desk_text: txt == null ? "" : String(txt),
     index: order.indexOf(String(cid)) + 1,
     order: order,
@@ -167,7 +174,12 @@ export async function pullSeg(name, cid, opts) {
     const ttl = o.ttl || (hit && hit.ttl) || TTL_MS;
     if (hit && (Date.now() - hit.at) < ttl) return hit.data;
   }
-  if (_inflight.has(k)) return _inflight.get(k);
+  if (_inflight.has(k)) {
+    if (!o.force) return _inflight.get(k);
+    await _inflight.get(k);
+    return pullSeg(name, cid, o);
+  }
+  const epoch = _epochs.get(k) || 0;
   const p = (async () => {
     try {
       const mode = await probeMode(name, cid);
@@ -180,6 +192,7 @@ export async function pullSeg(name, cid, opts) {
         data = await pullViaProject(name, cid);
       }
       if (data) {
+        if ((_epochs.get(k) || 0) !== epoch) return null;
         _cache.set(k, { at: Date.now(), data });
         /* 每次权威读都把版本号带回来 —— 写的时候才有得可押。
            降级路径（整包 project）没有 desk_rev：那就忘掉，走"硬写"。 */
@@ -229,7 +242,22 @@ export const TEMP_PREFIX = "__new__";
 export const tempKeyOf = (shot) => TEMP_PREFIX + (String(shot || "") || "?");
 export const isTempKey = (k) => String(k || "").startsWith(TEMP_PREFIX);
 
-export async function pushSegText(name, cid, text, opts) {
+const _pushes = new Map();
+export async function flushSegWrites(name, cid) {
+  const pending = _pushes.get(ck(name, cid));
+  if (pending) await pending.catch(() => {});
+}
+export function pushSegText(name, cid, text, opts) {
+  const key = ck(name, cid);
+  const prev = _pushes.get(key);
+  const next = Promise.resolve(prev).catch(() => {}).then(() => pushSegTextNow(name, cid, text, opts));
+  _pushes.set(key, next);
+  const clear = () => { if (_pushes.get(key) === next) _pushes.delete(key); };
+  next.then(clear, clear);
+  return next;
+}
+
+async function pushSegTextNow(name, cid, text, opts) {
   const o = opts || {};
   if (!name || !cid || !isRealCid(cid)) return null;
   const mode = await probeMode(name, cid);

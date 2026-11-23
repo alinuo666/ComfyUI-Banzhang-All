@@ -661,8 +661,7 @@ except Exception as e:
     print(f"⚠️ [班长全家桶] MV 规划台节点加载失败: {e}")
     MVPlan_Cls, MVPlan_Names = {}, {}
 
-# 28. 🪞 人脸修复台：独立外挂节点，插在一采与二采之间、latent 主干，零侵入；
-# 承载方案 C + 五巧思（_facefix 子包）；加载失败不影响其他任何节点。
+# 28. 🪞 人脸修复台：接在 VAE 解码与视频合成之间，精修成片中的人脸。
 try:
     from .nodes import banzhang_facefix
     FaceFix_Cls = getattr(banzhang_facefix, 'NODE_CLASS_MAPPINGS', {})
@@ -1037,6 +1036,24 @@ try:
 except Exception as e:
     print(f"⚠️ [班长全家桶] H3 角色替换采样节点加载失败: {e}")
 
+# 53. 🧱 遮罩块化：连续遮罩按块马赛克化（可选二值化），功能等价移植自
+#     ComfyUI-UniversalToolkit 的 Blockify Mask (UTK)；类型键独立，两插件共存不冲突。
+try:
+    from .nodes import banzhang_mask_blockify
+    NODE_CLASS_MAPPINGS.update(banzhang_mask_blockify.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_mask_blockify.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 遮罩块化节点加载失败: {e}")
+
+# 54. 🎨 遮罩叠画预览：把任意 MASK 描色铺回原始画面输出 IMAGE，接预览图像即可
+#     看块化/外扩后的真实覆盖范围（官方 SAM3 跟踪预览只吃 track_data，补此缺口）。
+try:
+    from .nodes import banzhang_mask_overlay_preview
+    NODE_CLASS_MAPPINGS.update(banzhang_mask_overlay_preview.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_mask_overlay_preview.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 遮罩叠画预览节点加载失败: {e}")
+
 # 启动期兼容守卫：核心与本机 comfy-aimdo 接口对不上就同步补装。
 # 放在节点列表之后、就绪之前 —— 万一要装包，用户先看到「成功加载 N 个节点」，
 # 才知道不是节点坏了在卡；pip 的进度输出也不会被节点列表淹没。
@@ -1054,6 +1071,15 @@ try:
     NODE_DISPLAY_NAME_MAPPINGS.update(_SigmaLora.NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:
     print(f"⚠️ [班长全家桶] 按步 LoRA 强度节点加载失败: {e}")
+
+# 55. 🪞 深度估计 Pro2：单节点集成苹果 Depth Pro 2（图片/视频、着色、米制导出、点云），
+#     9 个原节点合 1；底层库在 core/depth_pro2/，模型类变量缓存。
+try:
+    from .nodes import banzhang_depth_pro2
+    NODE_CLASS_MAPPINGS.update(banzhang_depth_pro2.NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(banzhang_depth_pro2.NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    print(f"⚠️ [班长全家桶] 深度估计 Pro2 节点加载失败: {e}")
 
 print("=" * 60)
 print("🚀 所有节点已准备就绪！开始创作吧！")

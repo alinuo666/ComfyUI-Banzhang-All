@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""🎬 H3 涟漪 · 选片段：从视频里选一段，输出官方 VIDEO，供生成与保存链路使用。"""
+"""🎬 H3 涟漪 · 时间轴选段：从视频里选一段，按生成画布输出视频 / 画面 / 音频，供生成与保存链路使用。"""
 
 from __future__ import annotations
 
@@ -15,14 +15,18 @@ from ..core import banzhang_ripple_video as vd
 class BZ_RippleClip:
     CATEGORY = st.CATEGORY
     FUNCTION = "select"
-    RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("video", "source_window", "audio", "first_frame", "last_frame")
+    RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", "IMAGE", "IMAGE", "FLOAT", "FLOAT", "INT")
+    RETURN_NAMES = ("video", "source_window", "audio", "first_frame", "last_frame",
+                    "fps", "duration", "total_frames")
     OUTPUT_TOOLTIPS = (
         "选中片段的官方 VIDEO（带原声，可直接接「保存视频」）；「应用编辑」「输出成片」也接这里。",
         "窗口原始画面，已按生成尺寸准备好。",
-        "这段窗口的原声音频；源片无音轨时为空。",
+        "这段窗口的音频；源片无音轨时为空。",
         "选区的第一帧（内容区，无补边）。",
         "选区的最后一帧——时间轴手动设置那段的末尾，不是整部源片的最后一帧。",
+        "输出视频的帧率：涟漪链路固定按 24fps 出片。",
+        "这段选区的实际时长（秒）；源片不足或网格对齐时会自动缩短。",
+        "这段选区的总帧数（已对齐 17n+5 帧网格，含补齐帧）。",
     )
     DESCRIPTION = (
         "选一段视频，在时间轴上拖动蓝色窗口决定要生成的范围，Shift+方向键也能挪窗口。"
@@ -81,7 +85,8 @@ class BZ_RippleClip:
         }
         content = vd.trim_content(window, geometry)
         clip_video = st.make_ripple_video(content, rc.FPS, audio, ripple)
-        return (clip_video, window, audio, content[0:1].clone(), content[-1:].clone())
+        return (clip_video, window, audio, content[0:1].clone(), content[-1:].clone(),
+                float(rc.FPS), frames_n / rc.FPS, int(frames_n))
 
 
 # 接口必须在模块导入时挂到 routes：ComfyUI 在加载完全部自定义节点之后才把
@@ -98,4 +103,4 @@ async def ripple_info(request):
 
 
 NODE_CLASS_MAPPINGS = {"BZ_RippleClip": BZ_RippleClip}
-NODE_DISPLAY_NAME_MAPPINGS = {"BZ_RippleClip": "🎬 H3 涟漪 · 选片段"}
+NODE_DISPLAY_NAME_MAPPINGS = {"BZ_RippleClip": "🎬 H3 涟漪 · 时间轴选段"}

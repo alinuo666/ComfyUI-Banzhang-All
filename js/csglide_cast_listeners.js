@@ -188,6 +188,15 @@ export function installListeners(ui) {
   /* 有主音轨时「时长」= 每段秒数（全片）：改它走重切，不再只改当前段
      （20261112 方案 B 合并，底部「每段秒数」框已撤）。 */
   const audioSegMode = () => !!(ui.monitor && ui.monitor.hasMainAudio && ui.monitor.hasMainAudio());
+  ui.inLen.oninput = () => {
+    if (audioSegMode()) return;
+    const raw = String(ui.inLen.value).trim();
+    if (!raw || !Number.isFinite(+raw) || +raw <= 0) return;
+    ui.st.length = totalOfNet(Math.round(+raw * FPS), headOverlapFrames(ui.monitor, ui.st));
+    // 输入即写面板与段快照；画布运行未必让输入框失焦，不能等 change 才保存。
+    // 不重画正在输入的秒框，档案 resize 仍在 change 时统一提交。
+    ui.commit(); syncSegSpec(false);
+  };
   ui.inLen.onchange = () => {
     if (audioSegMode()) {
       const raw = String(ui.inLen.value).trim();
@@ -195,10 +204,8 @@ export function installListeners(ui) {
       Promise.resolve(ui.monitor.setSegSec(+raw)).finally(() => ui.render());
       return;
     }
-    /* 只有「当前值 ≠ 上次回显值」才重算。上次回显值直接从唯一真值
-       st.length 反推，不存任何 DOM 标记：标记会被中途一次 render 抹掉，
-       用户输入就跟着丢了；值比较抹不掉。点进框又点出来（值没变，change
-       照样触发）也不会把回显的整数秒当成用户改过、再吸附到另一格。 */
+    /* input 已保存数值；change 负责档案同步和吸附回显。与当前净长秒数一致
+       时不再吸附，避免把整数秒回显当成新意图而漂移到另一格。 */
     /* 时长输入是**净长**口径（与时间轴块宽一致，20261013）：用户说 14 秒，
        时间轴这段就该 14 秒。换算只吸一次：目标总长 = 秒×24 + 头部承接重叠，
        吸到最近的 17k+5 格 —— 先吸净长再吸总长会漂移半格（两次取整）。
@@ -206,7 +213,7 @@ export function installListeners(ui) {
     const overN = headOverlapFrames(ui.monitor, ui.st);
     const raw = String(ui.inLen.value).trim();
     const echo = secsOfFrames(netOfTotal(alignFrames(ui.st.length), overN));
-    if (raw === echo) { ui.render(); return; }
+    if (raw === echo) { ui.render(); syncSegSpec(true); return; }
     const wantNet = (raw === "") ? 124 : Math.round((+raw) * FPS);
     ui.st.length = totalOfNet(wantNet, overN);
     ui.render(); ui.commit();
